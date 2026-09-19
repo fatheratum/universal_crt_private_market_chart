@@ -11,25 +11,47 @@ class PtyProcess(private val context: Context) {
     var onOutput: ((String) -> Unit)? = null
 
     private val executor = Executors.newSingleThreadExecutor()
+
     private var module: com.chaquo.python.PyObject? = null
 
     @Volatile
     private var stopped = false
 
+    private fun output(text: String) {
+        onOutput?.invoke(text)
+    }
+
     fun start() {
+        output(
+            "UNIVERSAL CRT V4\n" +
+            "ANDROID RUNTIME STARTING...\n"
+        )
+
         executor.execute {
             try {
+                output("1. EXECUTOR OK\n")
+
                 if (!Python.isStarted()) {
+                    output("2. STARTING CHAQUOPY...\n")
                     Python.start(AndroidPlatform(context))
                 }
 
+                output("3. CHAQUOPY OK\n")
+
                 val py = Python.getInstance()
+
+                output("4. PYTHON INSTANCE OK\n")
+
                 module = py.getModule("omni_runner")
+
+                output("5. omni_runner IMPORTED\n")
 
                 module!!.callAttr(
                     "prepare",
                     context.filesDir.absolutePath
                 )
+
+                output("6. RUNNER PREPARED\n")
 
                 val script = File(
                     context.filesDir,
@@ -42,6 +64,8 @@ class PtyProcess(private val context: Context) {
                     }
                 }
 
+                output("7. CRT SCRIPT COPIED\n")
+
                 module!!.callAttr(
                     "start",
                     script.absolutePath,
@@ -49,30 +73,39 @@ class PtyProcess(private val context: Context) {
                     32
                 )
 
+                output("8. PYTHON CRT THREAD STARTED\n")
+
                 while (!stopped) {
-                    val output =
+                    val result =
                         module!!.callAttr("read_output").toString()
 
-                    if (output.isNotEmpty()) {
-                        onOutput?.invoke(output)
+                    if (result.isNotEmpty()) {
+                        output(result)
                     }
 
-                    if (
+                    val running =
                         module!!
                             .callAttr("running")
                             .toString()
                             .toBoolean()
-                            .not()
-                    ) {
+
+                    if (!running) {
+                        output(
+                            "\nPYTHON CRT STOPPED.\n"
+                        )
                         break
                     }
 
                     Thread.sleep(50)
                 }
             } catch (t: Throwable) {
-                onOutput?.invoke(
-                    "\n[ANDROID PYTHON ERROR] " +
-                    "${t.javaClass.simpleName}: ${t.message}\n"
+                output(
+                    "\n\n=== ANDROID RUNTIME ERROR ===\n" +
+                    t.javaClass.name +
+                    "\n\n" +
+                    (t.message ?: "NO MESSAGE") +
+                    "\n\n" +
+                    t.stackTraceToString()
                 )
             }
         }
@@ -117,7 +150,10 @@ class PtyProcess(private val context: Context) {
                     }
                 }
             }
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
+            output(
+                "\n[KEY ERROR] ${t.javaClass.name}: ${t.message}\n"
+            )
         }
     }
 
