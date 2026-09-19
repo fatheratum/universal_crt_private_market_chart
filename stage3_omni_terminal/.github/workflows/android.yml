@@ -1,41 +1,38 @@
-name: "┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃ UNIVERSAL CRT V4 — STAGE 3 ANDROID APK BUILD                       ┃
-┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+name: "CRT TERMINAL — STAGE 3 APK ARTIFACT BUILD"
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
 
 jobs:
-  build:
-    name: "┏━━ BUILD UNIVERSAL CRT V4 ANDROID APK ━━┓"
+  apk:
+    name: "CRT TERMINAL — ANDROID APK ARTIFACT BUILD"
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: stage3_omni_terminal
 
     steps:
-      - name: "┌─ CHECKOUT UNIVERSAL CRT V4 ────────────────────────────────┐"
+      - name: "CHECKOUT STAGE 3"
         uses: actions/checkout@v4
 
-      - name: "├─ SETUP JAVA ──────────────────────────────────────────────┤"
+      - name: "SETUP JDK"
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
 
-      - name: "├─ SETUP ANDROID SDK ───────────────────────────────────────┤"
+      - name: "SETUP ANDROID SDK"
         uses: android-actions/setup-android@v3
 
-      - name: "├─ INSTALL ANDROID BUILD TOOLS ──────────────────────────────┤"
+      - name: "INSTALL ANDROID BUILD TOOLS"
         run: |
           sdkmanager "platform-tools"
           sdkmanager "platforms;android-35"
           sdkmanager "build-tools;35.0.0"
 
-      - name: "├─ VERIFY UNIVERSAL CRT V4 PROJECT ──────────────────────────┤"
+      - name: "VERIFY STAGE 3 PROJECT"
         run: |
           test -f settings.gradle
           test -f build.gradle
@@ -43,26 +40,20 @@ jobs:
           test -f app/src/main/AndroidManifest.xml
           test -f app/src/main/assets/universal_crt_v4.py
           test -f app/src/main/python/omni_runner.py
-          echo "┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
-          echo "┃ UNIVERSAL CRT V4 PROJECT VERIFIED                          ┃"
-          echo "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
 
-      - name: "├─ BUILD APK ────────────────────────────────────────────────┤"
+      - name: "BUILD APK ARTIFACT"
         run: |
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon --stacktrace
 
-      - name: "├─ VERIFY APK ──────────────────────────────────────────────┤"
+      - name: "VERIFY APK ARTIFACT"
         run: |
           test -f app/build/outputs/apk/debug/app-debug.apk
-          echo "┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
-          echo "┃ UNIVERSAL CRT V4 — APK BUILD SUCCESSFUL                   ┃"
-          echo "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
           ls -lh app/build/outputs/apk/debug/app-debug.apk
 
-      - name: "└─ UPLOAD APK ──────────────────────────────────────────────┘"
+      - name: "UPLOAD APK ARTIFACT"
         uses: actions/upload-artifact@v4
         with:
-          name: UNIVERSAL-CRT-V4-STAGE-3-ANDROID-APK
+          name: CRT-TERMINAL-STAGE-3-APK
           path: stage3_omni_terminal/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
