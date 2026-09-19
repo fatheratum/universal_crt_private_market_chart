@@ -1,0 +1,15 @@
+name: CRT terminal build note
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+jobs:
+  note:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Confirm CRT payload
+        run: |
+          test -f universal_crt_v3.py
+          python3 -m py_compile universal_crt_v3.py
+          echo "CRT is terminal-bound. APK must embed Termux-class PTY + Python."
