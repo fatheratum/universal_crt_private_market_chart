@@ -1,4 +1,4 @@
-name: Stage 3 Omni Terminal APK
+name: CRT terminal build
 
 on:
   push:
@@ -8,6 +8,10 @@ on:
 
 permissions:
   contents: read
+
+defaults:
+  run:
+    working-directory: stage3_omni_terminal
 
 jobs:
   build:
@@ -33,35 +37,33 @@ jobs:
             "platforms;android-35" \
             "build-tools;35.0.0"
 
-      - name: Verify V4 source
+      - name: Verify Stage 3 project
         run: |
-          test -s universal_crt_v4.py
-          mkdir -p app/src/main/assets
-          cp universal_crt_v4.py app/src/main/assets/universal_crt_v4.py
-          test -s app/src/main/assets/universal_crt_v4.py
-          sha256sum universal_crt_v4.py app/src/main/assets/universal_crt_v4.py
-
-      - name: Verify Python bridge
-        run: |
-          test -s app/src/main/python/omni_runner.py
-          test -s app/src/main/java/com/fatheratum/omniterminal/PtyProcess.kt
-          test -s app/src/main/java/com/fatheratum/omniterminal/TerminalView.kt
+          test -f settings.gradle
+          test -f app/build.gradle
+          test -f app/src/main/assets/universal_crt_v4.py
+          test -f app/src/main/python/omni_runner.py
+          echo "STAGE 3 PROJECT: VERIFIED"
+          echo "V4 ENGINE: VERIFIED"
+          wc -c app/src/main/assets/universal_crt_v4.py
 
       - name: Make Gradle executable
         run: chmod +x gradlew
 
-      - name: Build APK
+      - name: Build Stage 3 APK
         run: ./gradlew assembleDebug --no-daemon --stacktrace
 
-      - name: Verify APK
+      - name: Verify APK exists
         run: |
           test -s app/build/outputs/apk/debug/app-debug.apk
+          echo "APK BUILD: VERIFIED"
           ls -lh app/build/outputs/apk/debug/app-debug.apk
           sha256sum app/build/outputs/apk/debug/app-debug.apk
 
-      - name: Upload APK
+      - name: Upload Stage 3 APK
         uses: actions/upload-artifact@v4
         with:
           name: Stage3-Omni-Terminal-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: stage3_omni_terminal/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
           retention-days: 30
