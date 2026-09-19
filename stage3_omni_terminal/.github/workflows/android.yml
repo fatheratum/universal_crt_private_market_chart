@@ -1,4 +1,4 @@
-name: Stage 3 Android APK
+name: Stage 3 Omni Terminal APK
 
 on:
   push:
@@ -10,11 +10,11 @@ permissions:
   contents: read
 
 jobs:
-  build-apk:
+  build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up JDK 21
@@ -26,32 +26,42 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android SDK packages
+      - name: Install Android SDK
         run: |
-          sdkmanager "platform-tools"
-          sdkmanager "platforms;android-35"
-          sdkmanager "build-tools;35.0.0"
+          yes | sdkmanager \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
 
-      - name: Verify V4 engine is packaged
+      - name: Verify V4 source
         run: |
-          test -f app/src/main/assets/universal_crt_v4.py
-          echo "V4 ENGINE FOUND"
-          wc -c app/src/main/assets/universal_crt_v4.py
+          test -s universal_crt_v4.py
+          mkdir -p app/src/main/assets
+          cp universal_crt_v4.py app/src/main/assets/universal_crt_v4.py
+          test -s app/src/main/assets/universal_crt_v4.py
+          sha256sum universal_crt_v4.py app/src/main/assets/universal_crt_v4.py
+
+      - name: Verify Python bridge
+        run: |
+          test -s app/src/main/python/omni_runner.py
+          test -s app/src/main/java/com/fatheratum/omniterminal/PtyProcess.kt
+          test -s app/src/main/java/com/fatheratum/omniterminal/TerminalView.kt
 
       - name: Make Gradle executable
         run: chmod +x gradlew
 
-      - name: Build Stage 3 APK
-        run: ./gradlew assembleDebug --stacktrace
+      - name: Build APK
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
 
       - name: Verify APK
         run: |
           test -s app/build/outputs/apk/debug/app-debug.apk
           ls -lh app/build/outputs/apk/debug/app-debug.apk
+          sha256sum app/build/outputs/apk/debug/app-debug.apk
 
-      - name: Upload APK artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: stage3-omni-terminal-apk
+          name: Stage3-Omni-Terminal-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: error
+          retention-days: 30
