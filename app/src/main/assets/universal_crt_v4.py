@@ -646,6 +646,41 @@ def _multi_render():
         sys.stdout.write(_ansi_at(0,y)+"".join(rowsbuf[y]))
     sys.stdout.flush()
 
+
+def android_main(input_fn,output_fn,width=112,height=32):
+    global WIDTH,HEIGHT,FIRST_FRAME,MULTI_MENU,MULTI_MENU_CHART
+    WIDTH=max(100,min(BASE_WIDTH,int(width)))
+    HEIGHT=max(24,min(80,int(height)))
+    MULTI_MENU=0
+    MULTI_MENU_CHART=0
+    FIRST_FRAME=True
+    state["running"]=True
+    rows=_fetch_pair("BTC-USD",state["tf"])
+    if not rows:
+        rows=fetch_candles()
+    MULTI_CHARTS.clear()
+    _multi_add_chart("BTC-USD",state["tf"])
+    if rows and MULTI_CHARTS:
+        MULTI_CHARTS[0]["data"]=rows
+    while state["running"]:
+        _multi_refresh()
+        old_stdout=sys.stdout
+        try:
+            class _AndroidWriter:
+                def write(self,value):
+                    if value:
+                        output_fn(str(value))
+                    return len(value) if value else 0
+                def flush(self):
+                    return None
+            sys.stdout=_AndroidWriter()
+            _multi_render()
+        finally:
+            sys.stdout=old_stdout
+        key=input_fn()
+        if key:
+            _multi_key(key)
+
 def main():
     global WIDTH,HEIGHT,FIRST_FRAME,MULTI_MENU,MULTI_MENU_CHART
     term=shutil.get_terminal_size((BASE_WIDTH,BASE_HEIGHT))

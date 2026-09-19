@@ -1,97 +1,94 @@
 package com.fatheratum.omniterminal
 
+import android.content.Context
 import android.view.KeyEvent
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
-import java.io.BufferedReader
-import java.io.InputStreamReader
+import java.io.File
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
-class PtyProcess(private val context: android.content.Context) {
+class PtyProcess(private val context: Context) {
     var onOutput: ((String) -> Unit)? = null
-
-    private val executor = Executors.newSingleThreadExecutor()
-    private var stdin: java.io.OutputStream? = null
-    private var process: Process? = null
+    private val executor=Executors.newSingleThreadExecutor()
+    private var module: com.chaquo.python.PyObject?=null
+    @Volatile private var stopped=false
 
     fun start() {
-        if (!Python.isStarted()) {
-            Python.start(AndroidPlatform(context))
-        }
-
         executor.execute {
             try {
-                val py = Python.getInstance()
-                val module = py.getModule("omni_runner")
-                module.callAttr("prepare", context.filesDir.absolutePath)
+                if (!Python.isStarted()) {
+                    Python.start(AndroidPlatform(context))
+                }
+                val py=Python.getInstance()
+                module=py.getModule("omni_runner")
+                module!!.callAttr("prepare",context.filesDir.absolutePath)
 
-                val script = java.io.File(
-                    context.filesDir,
-                    "universal_crt_v4.py"
+                val script=File(context.filesDir,"universal_crt_v4.py")
+                context.assets.open("universal_crt_v4.py").use { input ->
+                    script.outputStream().use { output ->
+                        input.copyTo(output)
+                    }
+                }
+
+                module!!.callAttr(
+                    "start",
+                    script.absolutePath,
+                    112,
+                    32
                 )
 
-                val source = context.assets.open("universal_crt_v4.py")
-                    .bufferedReader()
-                    .use { it.readText() }
-
-                script.writeText(source)
-
-                val command = arrayOf(
-                    "sh",
-                    "-c",
-                    "exec python3 " + script.absolutePath
-                )
-
-                process = ProcessBuilder(*command)
-                    .redirectErrorStream(true)
-                    .start()
-
-                stdin = process!!.outputStream
-
-                BufferedReader(
-                    InputStreamReader(process!!.inputStream)
-                ).forEachLine { line ->
-                    onOutput?.invoke(line + "\n")
+                while (!stopped) {
+                    val output=module!!.callAttr("read_output").toString()
+                    if (output.isNotEmpty()) {
+                        onOutput?.invoke(output)
+                    }
+                    if (!module!!.callAttr("running").toBoolean()) {
+                        break
+                    }
+                    Thread.sleep(50)
                 }
             } catch (t: Throwable) {
                 onOutput?.invoke(
-                    "\n[PTY ERROR] ${t.javaClass.simpleName}: ${t.message}\n"
+                    "\n[ANDROID PYTHON ERROR] ${t.javaClass.simpleName}: ${t.message}\n"
                 )
             }
         }
     }
 
     fun writeKey(event: KeyEvent) {
-        val out = stdin ?: return
-
+        val m=module ?: return
         try {
-            val text = event.unicodeChar
-            if (text != 0) {
-                out.write(byteArrayOf(text.toByte()))
-            } else {
-                when (event.keyCode) {
-                    KeyEvent.KEYCODE_ENTER -> out.write('\n'.code)
-                    KeyEvent.KEYCODE_DEL -> out.write(127)
-                    KeyEvent.KEYCODE_DPAD_UP -> out.write("\u001B[A".toByteArray())
-                    KeyEvent.KEYCODE_DPAD_DOWN -> out.write("\u001B[B".toByteArray())
-                    KeyEvent.KEYCODE_DPAD_RIGHT -> out.write("\u001B[C".toByteArray())
-                    KeyEvent.KEYCODE_DPAD_LEFT -> out.write("\u001B[D".toByteArray())
-                    KeyEvent.KEYCODE_TAB -> out.write('\t'.code)
-                    KeyEvent.KEYCODE_ESCAPE -> out.write(27)
+            when (event.keyCode) {
+                KeyEvent.KEYCODE_DPAD_UP -> m.callAttr("send_key","UP")
+                KeyEvent.KEYCODE_DPAD_DOWN -> m.callAttr("send_key","DOWN")
+                KeyEvent.KEYCODE_DPAD_LEFT -> m.callAttr("send_key","LEFT")
+                KeyEvent.KEYCODE_DPAD_RIGHT -> m.callAttr("send_key","RIGHT")
+                KeyEvent.KEYCODE_ENTER -> m.callAttr("send_key","\n")
+                KeyEvent.KEYCODE_DEL -> m.callAttr("send_key","\u007F")
+                KeyEvent.KEYCODE_TAB -> m.callAttr("send_key","\t")
+                KeyEvent.KEYCODE_ESCAPE -> m.callAttr("send_key","ESC")
+                else -> {
+                    val c=event.unicodeChar
+                    if (c != 0) {
+                        m.callAttr("send_key",c.toChar().toString())
+                    }
                 }
             }
-            out.flush()
         } catch (_: Throwable) {
         }
     }
 
     fun stop() {
+        stopped=true
         try {
-            stdin?.close()
+            module?.callAttr("stop")
         } catch (_: Throwable) {
         }
-
-        process?.destroy()
         executor.shutdownNow()
+        try {
+            executor.awaitTermination(1,TimeUnit.SECONDS)
+        } catch (_: InterruptedException) {
+        }
     }
 }
