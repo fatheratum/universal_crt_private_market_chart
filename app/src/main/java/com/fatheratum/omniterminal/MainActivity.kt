@@ -3,7 +3,7 @@ package com.fatheratum.omniterminal
 import android.app.Activity
 import android.os.Bundle
 import android.graphics.Color
-import android.view.Gravity
+import android.view.WindowManager
 import android.widget.TextView
 import android.widget.ScrollView
 
@@ -13,16 +13,24 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        requestedOrientation =
+            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+
+        window.setSoftInputMode(
+            WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+        )
+
+        val terminal = TerminalView(this)
+
+        val scroll = ScrollView(this)
+        scroll.setBackgroundColor(Color.BLACK)
+        scroll.addView(terminal)
+        setContentView(scroll)
+
         try {
-            val terminal = TerminalView(this)
-
-            val scroll = ScrollView(this)
-            scroll.setBackgroundColor(Color.BLACK)
-            scroll.addView(terminal)
-            setContentView(scroll)
-
             pty = PtyProcess(this)
             terminal.attachProcess(pty!!)
+            terminal.showBootMessage("UNIVERSAL CRT V4\nStarting Python runtime...")
             pty!!.start()
         } catch (t: Throwable) {
             showFatalError(t)
@@ -34,7 +42,6 @@ class MainActivity : Activity() {
         error.setTextColor(Color.WHITE)
         error.setBackgroundColor(Color.BLACK)
         error.textSize = 16f
-        error.gravity = Gravity.TOP
         error.setPadding(20, 20, 20, 20)
         error.text =
             "UNIVERSAL CRT STARTUP FAILURE\n\n" +

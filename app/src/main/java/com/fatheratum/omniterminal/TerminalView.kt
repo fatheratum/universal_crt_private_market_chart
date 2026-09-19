@@ -22,6 +22,11 @@ class TerminalView(context: Context) : View(context) {
         setBackgroundColor(0xFF000000.toInt())
     }
 
+    fun showBootMessage(message: String) {
+        frame = message
+        invalidate()
+    }
+
     fun attachProcess(process: PtyProcess) {
         terminalProcess = process
 
