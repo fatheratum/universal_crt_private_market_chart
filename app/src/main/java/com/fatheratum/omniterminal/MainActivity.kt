@@ -2,27 +2,58 @@ package com.fatheratum.omniterminal
 
 import android.app.Activity
 import android.os.Bundle
-import android.view.WindowManager
+import android.graphics.Color
+import android.view.Gravity
+import android.widget.TextView
+import android.widget.ScrollView
 
 class MainActivity : Activity() {
-    private var pty:PtyProcess?=null
+    private var pty: PtyProcess? = null
 
-    override fun onCreate(savedInstanceState:Bundle?) {
+    override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.setSoftInputMode(
-            WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
-        )
-        setContentView(R.layout.activity_main)
-        val terminal=findViewById<TerminalView>(R.id.terminalView)
-        terminal.requestFocus()
-        pty=PtyProcess(this)
-        terminal.attachProcess(pty!!)
-        pty!!.start()
+
+        try {
+            val terminal = TerminalView(this)
+
+            val scroll = ScrollView(this)
+            scroll.setBackgroundColor(Color.BLACK)
+            scroll.addView(terminal)
+            setContentView(scroll)
+
+            pty = PtyProcess(this)
+            terminal.attachProcess(pty!!)
+            pty!!.start()
+        } catch (t: Throwable) {
+            showFatalError(t)
+        }
+    }
+
+    private fun showFatalError(t: Throwable) {
+        val error = TextView(this)
+        error.setTextColor(Color.WHITE)
+        error.setBackgroundColor(Color.BLACK)
+        error.textSize = 16f
+        error.gravity = Gravity.TOP
+        error.setPadding(20, 20, 20, 20)
+        error.text =
+            "UNIVERSAL CRT STARTUP FAILURE\n\n" +
+            t.javaClass.name + "\n\n" +
+            (t.message ?: "NO MESSAGE") + "\n\n" +
+            t.stackTraceToString()
+
+        val scroll = ScrollView(this)
+        scroll.setBackgroundColor(Color.BLACK)
+        scroll.addView(error)
+        setContentView(scroll)
     }
 
     override fun onDestroy() {
-        pty?.stop()
-        pty=null
+        try {
+            pty?.stop()
+        } catch (_: Throwable) {
+        }
+        pty = null
         super.onDestroy()
     }
 }
