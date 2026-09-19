@@ -1,4 +1,4 @@
-name: "CRT TERMINAL — STAGE 3 APK ARTIFACT BUILD"
+name: Build Universal CRT V4 APK
 
 on:
   push:
@@ -6,33 +6,34 @@ on:
   workflow_dispatch:
 
 jobs:
-  apk:
-    name: "CRT TERMINAL — ANDROID APK ARTIFACT BUILD"
+  build:
+    name: build
     runs-on: ubuntu-latest
+
     defaults:
       run:
         working-directory: stage3_omni_terminal
 
     steps:
-      - name: "CHECKOUT STAGE 3"
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: "SETUP JDK"
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: '17'
 
-      - name: "SETUP ANDROID SDK"
+      - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: "INSTALL ANDROID BUILD TOOLS"
+      - name: Install Android SDK
         run: |
           sdkmanager "platform-tools"
           sdkmanager "platforms;android-35"
           sdkmanager "build-tools;35.0.0"
 
-      - name: "VERIFY STAGE 3 PROJECT"
+      - name: Verify Stage 3 project
         run: |
           test -f settings.gradle
           test -f build.gradle
@@ -41,19 +42,19 @@ jobs:
           test -f app/src/main/assets/universal_crt_v4.py
           test -f app/src/main/python/omni_runner.py
 
-      - name: "BUILD APK ARTIFACT"
+      - name: Build APK
         run: |
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon --stacktrace
 
-      - name: "VERIFY APK ARTIFACT"
+      - name: Verify APK
         run: |
           test -f app/build/outputs/apk/debug/app-debug.apk
           ls -lh app/build/outputs/apk/debug/app-debug.apk
 
-      - name: "UPLOAD APK ARTIFACT"
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: CRT-TERMINAL-STAGE-3-APK
+          name: Universal-CRT-V4-debug-apk
           path: stage3_omni_terminal/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
