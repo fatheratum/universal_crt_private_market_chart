@@ -1,11 +1,11 @@
 import os
-import sys
-import time
 import queue
 import threading
 import importlib.util
+import sys
 
 _input_queue=queue.Queue()
+_output_queue=queue.Queue()
 _running=False
 _thread=None
 _module=None
@@ -29,30 +29,38 @@ def _input():
         try:
             return _input_queue.get(timeout=0.25)
         except queue.Empty:
-            pass
+            continue
     return "q"
 
 def _output(value):
     if value:
         _output_queue.put(str(value))
 
-_output_queue=queue.Queue()
-
 def start(script,width=112,height=32):
     global _thread,_running
     if _thread is not None and _thread.is_alive():
         return
+
     _running=True
+
     def worker():
         global _running
         try:
             module=_load(script)
             module.android_main(_input,_output,width,height)
         except BaseException as exc:
-            _output("\n[PYTHON ERROR] %s: %s\n"%(type(exc).__name__,exc))
+            _output(
+                "\n[PYTHON ERROR] %s: %s\n"
+                % (type(exc).__name__,exc)
+            )
         finally:
             _running=False
-    _thread=threading.Thread(target=worker,name="UniversalCRT",daemon=True)
+
+    _thread=threading.Thread(
+        target=worker,
+        name="UniversalCRT",
+        daemon=True
+    )
     _thread.start()
 
 def send_key(key):
@@ -68,7 +76,7 @@ def read_output():
             return "".join(parts)
 
 def running():
-    return _running
+    return bool(_running)
 
 def stop():
     global _running

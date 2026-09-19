@@ -6,13 +6,15 @@ import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
 import java.io.File
 import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
 
 class PtyProcess(private val context: Context) {
     var onOutput: ((String) -> Unit)? = null
-    private val executor=Executors.newSingleThreadExecutor()
-    private var module: com.chaquo.python.PyObject?=null
-    @Volatile private var stopped=false
+
+    private val executor = Executors.newSingleThreadExecutor()
+    private var module: com.chaquo.python.PyObject? = null
+
+    @Volatile
+    private var stopped = false
 
     fun start() {
         executor.execute {
@@ -20,11 +22,20 @@ class PtyProcess(private val context: Context) {
                 if (!Python.isStarted()) {
                     Python.start(AndroidPlatform(context))
                 }
-                val py=Python.getInstance()
-                module=py.getModule("omni_runner")
-                module!!.callAttr("prepare",context.filesDir.absolutePath)
 
-                val script=File(context.filesDir,"universal_crt_v4.py")
+                val py = Python.getInstance()
+                module = py.getModule("omni_runner")
+
+                module!!.callAttr(
+                    "prepare",
+                    context.filesDir.absolutePath
+                )
+
+                val script = File(
+                    context.filesDir,
+                    "universal_crt_v4.py"
+                )
+
                 context.assets.open("universal_crt_v4.py").use { input ->
                     script.outputStream().use { output ->
                         input.copyTo(output)
@@ -39,39 +50,70 @@ class PtyProcess(private val context: Context) {
                 )
 
                 while (!stopped) {
-                    val output=module!!.callAttr("read_output").toString()
+                    val output =
+                        module!!.callAttr("read_output").toString()
+
                     if (output.isNotEmpty()) {
                         onOutput?.invoke(output)
                     }
-                    if (!module!!.callAttr("running").toBoolean()) {
+
+                    if (
+                        module!!
+                            .callAttr("running")
+                            .toString()
+                            .toBoolean()
+                            .not()
+                    ) {
                         break
                     }
+
                     Thread.sleep(50)
                 }
             } catch (t: Throwable) {
                 onOutput?.invoke(
-                    "\n[ANDROID PYTHON ERROR] ${t.javaClass.simpleName}: ${t.message}\n"
+                    "\n[ANDROID PYTHON ERROR] " +
+                    "${t.javaClass.simpleName}: ${t.message}\n"
                 )
             }
         }
     }
 
     fun writeKey(event: KeyEvent) {
-        val m=module ?: return
+        val m = module ?: return
+
         try {
             when (event.keyCode) {
-                KeyEvent.KEYCODE_DPAD_UP -> m.callAttr("send_key","UP")
-                KeyEvent.KEYCODE_DPAD_DOWN -> m.callAttr("send_key","DOWN")
-                KeyEvent.KEYCODE_DPAD_LEFT -> m.callAttr("send_key","LEFT")
-                KeyEvent.KEYCODE_DPAD_RIGHT -> m.callAttr("send_key","RIGHT")
-                KeyEvent.KEYCODE_ENTER -> m.callAttr("send_key","\n")
-                KeyEvent.KEYCODE_DEL -> m.callAttr("send_key","\u007F")
-                KeyEvent.KEYCODE_TAB -> m.callAttr("send_key","\t")
-                KeyEvent.KEYCODE_ESCAPE -> m.callAttr("send_key","ESC")
+                KeyEvent.KEYCODE_DPAD_UP ->
+                    m.callAttr("send_key", "UP")
+
+                KeyEvent.KEYCODE_DPAD_DOWN ->
+                    m.callAttr("send_key", "DOWN")
+
+                KeyEvent.KEYCODE_DPAD_LEFT ->
+                    m.callAttr("send_key", "LEFT")
+
+                KeyEvent.KEYCODE_DPAD_RIGHT ->
+                    m.callAttr("send_key", "RIGHT")
+
+                KeyEvent.KEYCODE_ENTER ->
+                    m.callAttr("send_key", "ENTER")
+
+                KeyEvent.KEYCODE_DEL ->
+                    m.callAttr("send_key", "\u007F")
+
+                KeyEvent.KEYCODE_TAB ->
+                    m.callAttr("send_key", "\t")
+
+                KeyEvent.KEYCODE_ESCAPE ->
+                    m.callAttr("send_key", "ESC")
+
                 else -> {
-                    val c=event.unicodeChar
+                    val c = event.unicodeChar
                     if (c != 0) {
-                        m.callAttr("send_key",c.toChar().toString())
+                        m.callAttr(
+                            "send_key",
+                            c.toChar().toString()
+                        )
                     }
                 }
             }
@@ -80,15 +122,13 @@ class PtyProcess(private val context: Context) {
     }
 
     fun stop() {
-        stopped=true
+        stopped = true
+
         try {
             module?.callAttr("stop")
         } catch (_: Throwable) {
         }
+
         executor.shutdownNow()
-        try {
-            executor.awaitTermination(1,TimeUnit.SECONDS)
-        } catch (_: InterruptedException) {
-        }
     }
 }

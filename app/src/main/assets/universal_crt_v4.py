@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-import sys,time,select,termios,tty,shutil,json,urllib.request,urllib.parse,ssl
+import sys,time,shutil,json,urllib.request,urllib.parse,ssl
+try:
+    import select,termios,tty
+except ImportError:
+    select=None
+    termios=None
+    tty=None
 
 # ---- fixed base geometry (physical chart width never changes) ----
 BASE_WIDTH=112
@@ -655,31 +661,47 @@ def android_main(input_fn,output_fn,width=112,height=32):
     MULTI_MENU_CHART=0
     FIRST_FRAME=True
     state["running"]=True
+
     rows=_fetch_pair("BTC-USD",state["tf"])
     if not rows:
         rows=fetch_candles()
+
     MULTI_CHARTS.clear()
     _multi_add_chart("BTC-USD",state["tf"])
     if rows and MULTI_CHARTS:
         MULTI_CHARTS[0]["data"]=rows
+
     while state["running"]:
         _multi_refresh()
-        old_stdout=sys.stdout
-        try:
-            class _AndroidWriter:
-                def write(self,value):
-                    if value:
-                        output_fn(str(value))
-                    return len(value) if value else 0
-                def flush(self):
-                    return None
-            sys.stdout=_AndroidWriter()
-            _multi_render()
-        finally:
-            sys.stdout=old_stdout
+
+        rowsbuf=[[" " for _ in range(WIDTH)] for _ in range(HEIGHT)]
+        put(rowsbuf,1,0,"UNIVERSAL CRT V3 | MULTI-CHART MARKET RASTER",CYAN)
+        put(rowsbuf,1,1,"FIXED VIEWPORTS | OHLC MAPPING | LIVE PAIR DATA | REVEALABILITY",DIM)
+
+        if MULTI_VIEW_LIST:
+            _draw_view_list(rowsbuf)
+        else:
+            visible_charts=_multi_visible()
+            if not visible_charts:
+                put(rowsbuf,5,8,"NO CHARTS VISIBLE",YELLOW)
+                put(rowsbuf,5,10,"N = OPEN NEW   F = NEXT FROM CRYPTO LIST",WHITE)
+            else:
+                slots=_multi_slots(len(visible_charts),HEIGHT)
+                for c,(top,bottom) in zip(visible_charts,slots):
+                    _multi_draw_chart(c,top,bottom,rowsbuf)
+
+        put(rowsbuf,1,HEIGHT-9,"UP DOWN SELECT  LEFT RIGHT ADJUST  ENTER  N F V G  Z X ZOOM  T TF  A AUTO  R REFRESH  Q QUIT",WHITE)
+        _multi_menu(rowsbuf)
+
+        frame="\n".join("".join(row) for row in rowsbuf)
+        output_fn("\033[2J\033[H"+frame+"\n")
+        output_fn("\033[0m")
+
         key=input_fn()
         if key:
             _multi_key(key)
+
+    output_fn("\033[0m\n")
 
 def main():
     global WIDTH,HEIGHT,FIRST_FRAME,MULTI_MENU,MULTI_MENU_CHART
