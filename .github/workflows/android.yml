@@ -48,7 +48,7 @@ jobs:
 
       - name: Build APK
         run: |
-          gradle assembleDebug --no-daemon --stacktrace
+          gradle assembleDebug --no-daemon --stacktrace --info --console=plain
 
       - name: Verify APK
         run: |
