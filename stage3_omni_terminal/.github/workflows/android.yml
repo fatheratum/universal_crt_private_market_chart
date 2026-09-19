@@ -1,69 +1,64 @@
-name: CRT terminal build
+name: Build Stage 3 Android APK
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
-
-permissions:
-  contents: read
-
-defaults:
-  run:
-    working-directory: stage3_omni_terminal
 
 jobs:
   build:
+    name: Build Stage 3 APK
     runs-on: ubuntu-latest
 
+    defaults:
+      run:
+        working-directory: stage3_omni_terminal
+
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up JDK 21
+      - name: Set up JDK
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: '17'
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android SDK
+      - name: Install Android SDK packages
         run: |
-          yes | sdkmanager \
-            "platform-tools" \
-            "platforms;android-35" \
-            "build-tools;35.0.0"
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Verify Stage 3 project
+      - name: Verify Android project
         run: |
           test -f settings.gradle
+          test -f build.gradle
           test -f app/build.gradle
-          test -f app/src/main/assets/universal_crt_v4.py
+          test -f app/src/main/AndroidManifest.xml
+          test -f app/src/main/java/com/fatheratum/omniterminal/MainActivity.kt
+          test -f app/src/main/java/com/fatheratum/omniterminal/PtyProcess.kt
+          test -f app/src/main/java/com/fatheratum/omniterminal/TerminalView.kt
           test -f app/src/main/python/omni_runner.py
-          echo "STAGE 3 PROJECT: VERIFIED"
-          echo "V4 ENGINE: VERIFIED"
-          wc -c app/src/main/assets/universal_crt_v4.py
+          test -f app/src/main/assets/universal_crt_v4.py
+          echo "ANDROID PROJECT VERIFIED"
 
       - name: Make Gradle executable
         run: chmod +x gradlew
 
-      - name: Build Stage 3 APK
+      - name: Build Debug APK
         run: ./gradlew assembleDebug --no-daemon --stacktrace
 
-      - name: Verify APK exists
+      - name: Verify APK
         run: |
-          test -s app/build/outputs/apk/debug/app-debug.apk
-          echo "APK BUILD: VERIFIED"
+          test -f app/build/outputs/apk/debug/app-debug.apk
           ls -lh app/build/outputs/apk/debug/app-debug.apk
-          sha256sum app/build/outputs/apk/debug/app-debug.apk
+          echo "APK BUILD VERIFIED"
 
-      - name: Upload Stage 3 APK
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Stage3-Omni-Terminal-debug-apk
+          name: Stage3-Omni-Terminal-debug
           path: stage3_omni_terminal/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
-          retention-days: 30
