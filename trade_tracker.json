@@ -1,0 +1,41 @@
+{
+  "open": [
+    {
+      "status": "OPEN",
+      "pair": "GBPJPY",
+      "tf": "15MIN",
+      "direction": null,
+      "entry": 210.1063990769961,
+      "sl": 209.6063990769961,
+      "tp": 210.6063990769961,
+      "lots": 0.20049586186167423,
+      "balance": 25.0,
+      "opened_at": null
+    },
+    {
+      "status": "OPEN",
+      "pair": "GBPJPY",
+      "tf": "15MIN",
+      "direction": null,
+      "entry": 81196.96068667699,
+      "sl": 81196.46068667699,
+      "tp": 81197.46068667699,
+      "lots": 0.20144161215588535,
+      "balance": 25.0,
+      "opened_at": null
+    },
+    {
+      "status": "OPEN",
+      "pair": "BTCUSD",
+      "tf": "15MIN",
+      "direction": null,
+      "entry": 210.1063990769961,
+      "sl": 210.1013990769961,
+      "tp": 210.1113990769961,
+      "lots": 0.201291188251225,
+      "balance": 25.0,
+      "opened_at": null
+    }
+  ],
+  "closed": []
+}

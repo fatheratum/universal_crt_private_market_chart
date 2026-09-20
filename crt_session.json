@@ -1,0 +1,30 @@
+{
+  "saved_at": "2026-09-20T00:42:35Z",
+  "tf": "15m",
+  "overlay": {
+    "pair": "BTCUSD",
+    "tf": "15MIN",
+    "entry": 210.1063990769961,
+    "sl": 210.1013990769961,
+    "tp": 210.1113990769961,
+    "lots": 0.201291188251225,
+    "direction": null,
+    "balance": 25.0
+  },
+  "tracker_view": false,
+  "config": {
+    "account_balance": 25.0,
+    "trading_pair": "GBPJPY",
+    "timeframe": "15MIN",
+    "last_entry": null
+  },
+  "charts": [
+    {
+      "pair": "GBP-JPY",
+      "tf": "15m",
+      "zoom": 1.0,
+      "auto": true,
+      "visible": true
+    }
+  ]
+}

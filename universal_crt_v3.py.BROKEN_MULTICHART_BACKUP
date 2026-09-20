@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+import sys,time,select,termios,tty,shutil,json,urllib.request,urllib.parse,ssl
+WIDTH=112
+HEIGHT=32
+CHART_L,CHART_R=5,84
+CHART_T,CHART_B=4,23
+AXIS_L,AXIS_R=85,88
+MENU_L,MENU_R=90,110
+GREEN="\033[32m"
+RED="\033[31m"
+CYAN="\033[36m"
+BLUE="\033[34m"
+YELLOW="\033[33m"
+WHITE="\033[37m"
+DIM="\033[2m"
+RESET="\033[0m"
+BOLD="\033[1m"
+TF={"1m":60,"5m":300,"15m":900,"1h":3600,"4h":21600,"1d":86400}
+TF_ORDER=["1m","5m","15m","1h","4h","1d"]
+state={"tf":"1h","zoom":1.0,"auto":True,"running":True,"menu":0,"status":"LIVE"}
+DATA=[]
+def clamp(v,a,b):
+    return max(a,min(b,v))
+def api_url(tf):
+    return "https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity="+str(TF[tf])
+def fetch_candles():
+    try:
+        req=urllib.request.Request(api_url(state["tf"]),headers={"User-Agent":"UniversalCRT/3.0","Accept":"application/json"})
+        with urllib.request.urlopen(req,timeout=5,context=ssl.create_default_context()) as r:
+            raw=json.loads(r.read().decode())
+        rows=[]
+        for x in reversed(raw):
+            if len(x)>=6:
+                ts,lo,hi,op,cl,vol=x[:6]
+                rows.append({"ts":int(ts),"o":float(op),"h":float(hi),"l":float(lo),"c":float(cl),"v":float(vol)})
+        if rows:
+            return rows[-120:]
+    except Exception:
+        pass
+    return fallback_data()
+def fallback_data():
+    base=81000.0
+    out=[]
+    seed=[0.002,-0.001,0.003,0.001,-0.002,0.004,-0.003,0.002,0.001,-0.004,0.003,-0.001,0.002,-0.003,0.004,-0.002,0.001,0.003,-0.002,0.001,-0.001,0.003,-0.002,0.002]
+    now=int(time.time()//TF[state["tf"]])*TF[state["tf"]]
+    for i,p in enumerate(seed):
+        o=base
+        c=o*(1+p)
+        h=max(o,c)*(1+abs(p)*1.8+0.001)
+        l=min(o,c)*(1-abs(p)*1.8-0.001)
+        out.append({"ts":now-(len(seed)-i)*TF[state["tf"]],"o":o,"h":h,"l":l,"c":c,"v":0.0})
+        base=c
+    return out
+def aggregate(rows,target):
+    if not rows:return []
+    if target=="1m":return rows
+    sec=TF[target]
+    groups={}
+    for r in rows:
+        k=(r["ts"]//sec)*sec
+        groups.setdefault(k,[]).append(r)
+    out=[]
+    for k,g in sorted(groups.items()):
+        out.append({"ts":k,"o":g[0]["o"],"h":max(x["h"] for x in g),"l":min(x["l"] for x in g),"c":g[-1]["c"],"v":sum(x["v"] for x in g)})
+    return out
+def visible(rows):
+    if not rows:return []
+    n=round(24/state["zoom"])
+    n=clamp(n,10,min(60,len(rows)))
+    return rows[-n:]
+def price_range(rows):
+    lo=min(r["l"] for r in rows)
+    hi=max(r["h"] for r in rows)
+    if hi<=lo:hi=lo+1
+    span=hi-lo
+    pad=span*0.08
+    if state["auto"]:
+        lo-=pad
+        hi+=pad
+    return lo,hi
+def py(price,lo,hi):
+    usable=CHART_B-CHART_T
+    return int(round(CHART_B-(price-lo)/(hi-lo)*usable))
+def money(v):
+    if v>=1000000:return f"{v/1000000:.2f}M"
+    if v>=1000:return f"{v/1000:.1f}k"
+    return f"{v:.0f}"
+def put(buf,x,y,s,color=""):
+    if y<0 or y>=HEIGHT:return
+    if x>=WIDTH or x+len(s)<=0:return
+    a=max(0,-x)
+    s=s[a:]
+    x=max(0,x)
+    if x>=WIDTH:return
+    s=s[:WIDTH-x]
+    for i,ch in enumerate(s):
+        if ch!=" ":
+            buf[y][x+i]=(color+ch+RESET if color else ch)
+def frame(buf):
+    for x in range(CHART_L,CHART_R+1):
+        put(buf,x,CHART_T,"-",BLUE)
+        put(buf,x,CHART_B,"-",BLUE)
+    for y in range(CHART_T,CHART_B+1):
+        put(buf,CHART_L,y,"|",BLUE)
+        put(buf,CHART_R,y,"|",BLUE)
+    put(buf,CHART_L,CHART_T,"+",BLUE)
+    put(buf,CHART_R,CHART_T,"+",BLUE)
+    put(buf,CHART_L,CHART_B,"+",BLUE)
+    put(buf,CHART_R,CHART_B,"+",BLUE)
+    for y in range(CHART_T+4,CHART_B,4):
+        for x in range(CHART_L+1,CHART_R):
+            if buf[y][x]==" ":buf[y][x]=DIM+"."+RESET
+    for x in range(CHART_L+10,CHART_R,10):
+        for y in range(CHART_T+1,CHART_B):
+            if buf[y][x]==" ":buf[y][x]=DIM+"."+RESET
+def draw_price_axis(buf,lo,hi):
+    for i in range(6):
+        p=hi-(hi-lo)*i/5
+        y=round(CHART_T+(CHART_B-CHART_T)*i/5)
+        put(buf,AXIS_L,y,money(p),CYAN)
+def draw_candles(buf,rows,lo,hi):
+    n=len(rows)
+    if n==0:return []
+    left=CHART_L+2
+    right=CHART_R-2
+    span=max(1,right-left)
+    slot=span/(n-1 if n>1 else 1)
+    body_w=max(1,min(3,int(max(1.0,slot*0.55))))
+    centers=[]
+    price_span=max(1e-12,float(hi)-float(lo))
+    for i,r in enumerate(rows):
+        x=int(round(left+i*slot))
+        centers.append(x)
+        o=float(r["o"])
+        c=float(r["c"])
+        h=max(float(r["h"]),o,c)
+        l=min(float(r["l"]),o,c)
+        yo=clamp(py(o,lo,hi),CHART_T+1,CHART_B-1)
+        yc=clamp(py(c,lo,hi),CHART_T+1,CHART_B-1)
+        yh=clamp(py(h,lo,hi),CHART_T+1,CHART_B-1)
+        yl=clamp(py(l,lo,hi),CHART_T+1,CHART_B-1)
+        color=GREEN if c>=o else RED
+        top=min(yo,yc)
+        bot=max(yo,yc)
+        body_height=max(1,bot-top+1)
+        normalized_range=(h-l)/price_span
+        if body_height==1 and abs(c-o)>0:
+            bot=min(CHART_B-1,top+1)
+        half=max(0,(body_w-1)//2)
+        x0=max(CHART_L+1,x-half)
+        x1=min(CHART_R-1,x+half)
+        for y in range(yh,yl+1):
+            put(buf,x,y,"┃",color)
+        for xx in range(x0,x1+1):
+            for y in range(top,bot+1):
+                put(buf,xx,y,"█",color)
+        if yh<top:
+            put(buf,x,top-1,"┬",color)
+        if bot<yl:
+            put(buf,x,bot+1,"┴",color)
+        if body_height>=3 and normalized_range>0:
+            put(buf,x0,top,"█",color)
+            put(buf,x1,bot,"█",color)
+    return centers
+

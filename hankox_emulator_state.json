@@ -1,0 +1,52 @@
+{
+  "account": {
+    "currency": "USD",
+    "balance": 20.0,
+    "equity": 20.0,
+    "margin": 0.0,
+    "free_margin": 20.0
+  },
+  "instrument": {
+    "symbol": "GBPJPY",
+    "base_currency": "GBP",
+    "quote_currency": "JPY",
+    "pip_size": 0.01,
+    "tick_size": 0.001,
+    "price_precision": 3,
+    "contract_size": 100000,
+    "lot_unit": "lot",
+    "minimum_lot": 0.01,
+    "maximum_lot": 100.0,
+    "lot_step": 0.01,
+    "margin_currency": "GBP"
+  },
+  "market": {
+    "symbol": "GBPJPY",
+    "timeframe": "15m",
+    "bid": 210.082,
+    "ask": 210.128,
+    "mid": 210.105,
+    "spread": 0.046,
+    "timestamp": null,
+    "fresh": false,
+    "market_state": "EMULATED"
+  },
+  "trade": {
+    "status": "NO_TRADE",
+    "direction": null,
+    "entry": null,
+    "stop_loss": null,
+    "take_profit": null,
+    "lots": 0.0,
+    "current_price": null,
+    "unrealized_pnl": 0.0,
+    "drawdown": 0.0
+  },
+  "ohlc": {
+    "provider": "HankoX Emulator",
+    "authority": "EMULATED",
+    "symbol": "GBPJPY",
+    "timeframe": "15m",
+    "candles": []
+  }
+}

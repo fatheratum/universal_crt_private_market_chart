@@ -1,0 +1,714 @@
+#!/usr/bin/env python3
+import sys,time,select,termios,tty,shutil,json,urllib.request,urllib.parse,ssl
+WIDTH=112
+HEIGHT=32
+CHART_L,CHART_R=5,84
+CHART_T,CHART_B=4,23
+AXIS_L,AXIS_R=85,88
+MENU_L,MENU_R=90,110
+GREEN="\033[32m"
+RED="\033[31m"
+CYAN="\033[36m"
+BLUE="\033[34m"
+YELLOW="\033[33m"
+WHITE="\033[37m"
+DIM="\033[2m"
+RESET="\033[0m"
+BOLD="\033[1m"
+TF={"1m":60,"5m":300,"15m":900,"1h":3600,"4h":21600,"1d":86400}
+TF_ORDER=["1m","5m","15m","1h","4h","1d"]
+state={"tf":"1h","zoom":1.0,"auto":True,"running":True,"menu":0,"status":"LIVE"}
+DATA=[]
+def clamp(v,a,b):
+    return max(a,min(b,v))
+def api_url(tf):
+    return "https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity="+str(TF[tf])
+def fetch_candles():
+    try:
+        req=urllib.request.Request(api_url(state["tf"]),headers={"User-Agent":"UniversalCRT/3.0","Accept":"application/json"})
+        with urllib.request.urlopen(req,timeout=5,context=ssl.create_default_context()) as r:
+            raw=json.loads(r.read().decode())
+        rows=[]
+        for x in reversed(raw):
+            if len(x)>=6:
+                ts,lo,hi,op,cl,vol=x[:6]
+                rows.append({"ts":int(ts),"o":float(op),"h":float(hi),"l":float(lo),"c":float(cl),"v":float(vol)})
+        if rows:
+            return rows[-120:]
+    except Exception:
+        pass
+    return fallback_data()
+def fallback_data():
+    base=81000.0
+    out=[]
+    seed=[0.002,-0.001,0.003,0.001,-0.002,0.004,-0.003,0.002,0.001,-0.004,0.003,-0.001,0.002,-0.003,0.004,-0.002,0.001,0.003,-0.002,0.001,-0.001,0.003,-0.002,0.002]
+    now=int(time.time()//TF[state["tf"]])*TF[state["tf"]]
+    for i,p in enumerate(seed):
+        o=base
+        c=o*(1+p)
+        h=max(o,c)*(1+abs(p)*1.8+0.001)
+        l=min(o,c)*(1-abs(p)*1.8-0.001)
+        out.append({"ts":now-(len(seed)-i)*TF[state["tf"]],"o":o,"h":h,"l":l,"c":c,"v":0.0})
+        base=c
+    return out
+def aggregate(rows,target):
+    if not rows:return []
+    if target=="1m":return rows
+    sec=TF[target]
+    groups={}
+    for r in rows:
+        k=(r["ts"]//sec)*sec
+        groups.setdefault(k,[]).append(r)
+    out=[]
+    for k,g in sorted(groups.items()):
+        out.append({"ts":k,"o":g[0]["o"],"h":max(x["h"] for x in g),"l":min(x["l"] for x in g),"c":g[-1]["c"],"v":sum(x["v"] for x in g)})
+    return out
+def visible(rows):
+    if not rows:return []
+    n=round(24/state["zoom"])
+    n=clamp(n,10,min(60,len(rows)))
+    return rows[-n:]
+def price_range(rows):
+    lo=min(r["l"] for r in rows)
+    hi=max(r["h"] for r in rows)
+    if hi<=lo:hi=lo+1
+    span=hi-lo
+    pad=span*0.08
+    if state["auto"]:
+        lo-=pad
+        hi+=pad
+    return lo,hi
+def py(price,lo,hi):
+    usable=CHART_B-CHART_T
+    return int(round(CHART_B-(price-lo)/(hi-lo)*usable))
+def money(v):
+    if v>=1000000:return f"{v/1000000:.2f}M"
+    if v>=1000:return f"{v/1000:.1f}k"
+    return f"{v:.0f}"
+def put(buf,x,y,s,color=""):
+    if y<0 or y>=HEIGHT:return
+    if x>=WIDTH or x+len(s)<=0:return
+    a=max(0,-x)
+    s=s[a:]
+    x=max(0,x)
+    if x>=WIDTH:return
+    s=s[:WIDTH-x]
+    for i,ch in enumerate(s):
+        if ch!=" ":
+            buf[y][x+i]=(color+ch+RESET if color else ch)
+def frame(buf):
+    for x in range(CHART_L,CHART_R+1):
+        put(buf,x,CHART_T,"-",BLUE)
+        put(buf,x,CHART_B,"-",BLUE)
+    for y in range(CHART_T,CHART_B+1):
+        put(buf,CHART_L,y,"|",BLUE)
+        put(buf,CHART_R,y,"|",BLUE)
+    put(buf,CHART_L,CHART_T,"+",BLUE)
+    put(buf,CHART_R,CHART_T,"+",BLUE)
+    put(buf,CHART_L,CHART_B,"+",BLUE)
+    put(buf,CHART_R,CHART_B,"+",BLUE)
+    for y in range(CHART_T+4,CHART_B,4):
+        for x in range(CHART_L+1,CHART_R):
+            if buf[y][x]==" ":buf[y][x]=DIM+"."+RESET
+    for x in range(CHART_L+10,CHART_R,10):
+        for y in range(CHART_T+1,CHART_B):
+            if buf[y][x]==" ":buf[y][x]=DIM+"."+RESET
+def draw_price_axis(buf,lo,hi):
+    for i in range(6):
+        p=hi-(hi-lo)*i/5
+        y=round(CHART_T+(CHART_B-CHART_T)*i/5)
+        put(buf,AXIS_L,y,money(p),CYAN)
+def draw_candles(buf,rows,lo,hi):
+    if not rows:return []
+    n=len(rows)
+    left=CHART_L+2
+    right=CHART_R-2
+    span=max(1,right-left)
+    slot=span/max(1,n-1)
+    body_w=max(1,min(3,int(slot*0.55)))
+    centers=[]
+    price_span=max(1e-12,float(hi)-float(lo))
+    for i,r in enumerate(rows):
+        x=int(round(left+i*slot))
+        centers.append(x)
+        o=float(r["o"])
+        c=float(r["c"])
+        h=max(float(r["h"]),o,c)
+        l=min(float(r["l"]),o,c)
+        yo=clamp(py(o,lo,hi),CHART_T+1,CHART_B-1)
+        yc=clamp(py(c,lo,hi),CHART_T+1,CHART_B-1)
+        yh=clamp(py(h,lo,hi),CHART_T+1,CHART_B-1)
+        yl=clamp(py(l,lo,hi),CHART_T+1,CHART_B-1)
+        color=GREEN if c>=o else RED
+        top=min(yo,yc)
+        bot=max(yo,yc)
+        if top==bot:bot=min(CHART_B-1,top+1)
+        half=(body_w-1)//2
+        for y in range(yh,yl+1):
+            put(buf,x,y,"┃",color)
+        for xx in range(max(CHART_L+1,x-half),min(CHART_R-1,x+half)+1):
+            for y in range(top,bot+1):
+                put(buf,xx,y,"█",color)
+        if yh<top:put(buf,x,top-1,"┬",color)
+        if bot<yl:put(buf,x,bot+1,"┴",color)
+        if (h-l)/price_span>0:
+            put(buf,x,top,"█",color)
+            put(buf,x,bot,"█",color)
+    return centers
+
+def draw_trend(buf,rows,lo,hi,centers):
+    if len(rows)<2:return
+    for i in range(len(rows)-1):
+        x1,x2=centers[i],centers[i+1]
+        y1=clamp(py(rows[i]["c"],lo,hi),CHART_T+1,CHART_B-1)
+        y2=clamp(py(rows[i+1]["c"],lo,hi),CHART_T+1,CHART_B-1)
+        dx=x2-x1
+        if dx<=0:continue
+        for x in range(x1+1,x2):
+            t=(x-x1)/dx
+            y=round(y1+(y2-y1)*t)
+            if CHART_T<y<CHART_B and buf[y][x]==" ":
+                buf[y][x]=DIM+"."+RESET
+def draw_time(buf,rows,centers):
+    if not rows:return
+    for i in range(0,len(rows),max(1,len(rows)//6)):
+        x=centers[i]
+        label=time.strftime("%H:%M",time.localtime(rows[i]["ts"]))
+        if x-2>=CHART_L and x+3<=CHART_R:put(buf,x-2,CHART_B+1,label,DIM)
+def menu(buf):
+    for y in range(2,26):
+        put(buf,MENU_L,y,"|",BLUE)
+        put(buf,MENU_R,y,"|",BLUE)
+    for x in range(MENU_L,MENU_R+1):
+        put(buf,x,2,"-",BLUE)
+        put(buf,x,25,"-",BLUE)
+    put(buf,MENU_L,2,"+",BLUE);put(buf,MENU_R,2,"+",BLUE)
+    put(buf,MENU_L,25,"+",BLUE);put(buf,MENU_R,25,"+",BLUE)
+    put(buf,MENU_L+2,4,"CONTROL PANEL",YELLOW)
+    items=[("1","ZOOM CONTROLS"),("2","TIMEFRAME SNAP"),("3","AUTO-ADJUST"),("4","REFRESH DATA"),("Q","QUIT")]
+    for i,(k,v) in enumerate(items):
+        y=7+i*3
+        c=CYAN if state["menu"]==i else WHITE
+        put(buf,MENU_L+2,y,k+"  "+v,c)
+    put(buf,MENU_L+2,22,"Z/X  ZOOM",DIM)
+    put(buf,MENU_L+2,23,"T    TIMEFRAME",DIM)
+def header(buf):
+    live_tf=state["tf"]
+    put(buf,1,0,f"UNIVERSAL CRT V3 | BTC/USD | {live_tf} LIVE | MATHEMATICAL MARKET RASTER",CYAN)
+    put(buf,1,1,f"OHLC -> PRICE MAP -> FIXED CANDLE SLOTS -> {live_tf} VIEWPORT",DIM)
+def footer(buf,rows):
+    if not rows:return
+    last=rows[-1]
+    ch=GREEN if last["c"]>=last["o"] else RED
+    trend="UP" if last["c"]>=rows[0]["c"] else "DOWN"
+    put(buf,1,27,f"BTC/USD  {state['tf']} LIVE  ZOOM {state['zoom']:.2f}  CANDLES {len(rows):02d}  LAST {last['c']:,.2f}",ch)
+    put(buf,1,28,f"RANGE {money(min(r['l'] for r in rows))} - {money(max(r['h'] for r in rows))}  TREND {trend}  AUTO {'ON' if state['auto'] else 'OFF'}",DIM)
+    put(buf,1,30,"[Z] IN  [X] OUT  [T] TIMEFRAME  [A] AUTO  [R] REFRESH  [Q] QUIT",WHITE)
+def render():
+    rows=visible(aggregate(DATA,state["tf"]))
+    if not rows:return
+    lo,hi=price_range(rows)
+    buf=[[" " for _ in range(WIDTH)] for _ in range(HEIGHT)]
+    header(buf)
+    frame(buf)
+    centers=draw_candles(buf,rows,lo,hi)
+    draw_trend(buf,rows,lo,hi,centers)
+    draw_price_axis(buf,lo,hi)
+    draw_time(buf,rows,centers)
+    menu(buf)
+    footer(buf,rows)
+    sys.stdout.write("\033[H\033[2J")
+    sys.stdout.write("\n".join("".join(r) for r in buf))
+    sys.stdout.flush()
+def refresh():
+    global DATA
+    DATA=fetch_candles()
+def keypress(fd):
+    old=termios.tcgetattr(fd)
+    tty.setcbreak(fd)
+    try:return sys.stdin.read(1)
+    finally:termios.tcsetattr(fd,termios.TCSADRAIN,old)
+def handle(k):
+    k=k.lower()
+    if k=="q":
+        state["running"]=False
+    elif k=="z":
+        state["zoom"]=clamp(round(state["zoom"]+0.25,2),0.5,3.0)
+    elif k=="x":
+        state["zoom"]=clamp(round(state["zoom"]-0.25,2),0.5,3.0)
+    elif k=="a":
+        state["auto"]=not state["auto"]
+    elif k=="r":
+        refresh()
+    elif k=="t":
+        i=(TF_ORDER.index(state["tf"])+1)%len(TF_ORDER)
+        state["tf"]=TF_ORDER[i]
+        refresh()
+    elif k in "1234":
+        state["menu"]=int(k)-1
+        if k=="3":state["auto"]=not state["auto"]
+        if k=="4":refresh()
+    elif k=="+":
+        state["zoom"]=clamp(round(state["zoom"]+0.25,2),0.5,3.0)
+    elif k=="-":
+        state["zoom"]=clamp(round(state["zoom"]-0.25,2),0.5,3.0)
+def main():
+    global WIDTH,HEIGHT
+    term=shutil.get_terminal_size((WIDTH,HEIGHT))
+    WIDTH=max(100,min(WIDTH,term.columns))
+    HEIGHT=max(32,min(HEIGHT,term.lines))
+    refresh()
+    fd=sys.stdin.fileno()
+    old=termios.tcgetattr(fd)
+    try:
+        while state["running"]:
+            render()
+            if select.select([fd],[],[],1.0)[0]:
+                handle(sys.stdin.read(1))
+    finally:
+        termios.tcsetattr(fd,termios.TCSADRAIN,old)
+        sys.stdout.write("\033[0m\033[2J\033[H")
+        sys.stdout.flush()
+
+# ===== LOCKED_TERMINAL_COMPOSITOR_V1 =====
+MENU_ITEMS=[("ZOOM CONTROLS","z/x"),("TIMEFRAME SNAP","t"),("AUTO-ADJUST","a"),("REFRESH DATA","r"),("QUIT","q")]
+MENU_CURSOR=0
+FIRST_FRAME=True
+def _ansi_at(x,y):
+    return f"\033[{y+1};{x+1}H"
+def _write_region(buf,x1,x2,y1,y2):
+    out=[]
+    for y in range(y1,y2+1):
+        out.append(_ansi_at(x1,y))
+        out.append("".join(buf[y][x1:x2+1]))
+    sys.stdout.write("".join(out))
+def _menu_selection(buf):
+    for i,(name,key) in enumerate(MENU_ITEMS):
+        y=7+i*3
+        selected=(i==MENU_CURSOR)
+        c=CYAN if selected else WHITE
+        marker=">" if selected else " "
+        put(buf,MENU_L+1,y,marker+" "+name,c)
+        put(buf,MENU_L+17,y,key,DIM)
+def _locked_render():
+    global FIRST_FRAME
+    rows=visible(aggregate(DATA,state["tf"]))
+    if not rows:return
+    lo,hi=price_range(rows)
+    buf=[[" " for _ in range(WIDTH)] for _ in range(HEIGHT)]
+    header(buf)
+    frame(buf)
+    centers=draw_candles(buf,rows,lo,hi)
+    draw_trend(buf,rows,lo,hi,centers)
+    draw_price_axis(buf,lo,hi)
+    draw_time(buf,rows,centers)
+    menu(buf)
+    footer(buf,rows)
+    _menu_selection(buf)
+    if FIRST_FRAME:
+        sys.stdout.write("\033[2J\033[H")
+        sys.stdout.write("\n".join("".join(r) for r in buf))
+        sys.stdout.flush()
+        FIRST_FRAME=False
+        return
+    _write_region(buf,CHART_L+1,CHART_R-1,CHART_T+1,CHART_B-1)
+    _write_region(buf,AXIS_L,AXIS_R,CHART_T+1,CHART_B-1)
+    _write_region(buf,CHART_L+1,CHART_R-1,CHART_B+1,CHART_B+1)
+    _write_region(buf,1,WIDTH-1,27,30)
+    sys.stdout.write(_ansi_at(MENU_L+1,7))
+    for i,(name,key) in enumerate(MENU_ITEMS):
+        y=7+i*3
+        selected=(i==MENU_CURSOR)
+        c=CYAN if selected else WHITE
+        marker=">" if selected else " "
+        sys.stdout.write(_ansi_at(MENU_L+1,y)+c+marker+" "+name+RESET+" "*max(0,17-len(name)))
+    sys.stdout.flush()
+def _read_key(fd):
+    ch=sys.stdin.read(1)
+    if ch!="\033":return ch
+    if not select.select([fd],[],[],0.05)[0]:return ch
+    seq=sys.stdin.read(1)
+    if seq=="[" and select.select([fd],[],[],0.05)[0]:
+        code=sys.stdin.read(1)
+        return {"A":"UP","B":"DOWN","C":"RIGHT","D":"LEFT"}.get(code,"ESC")
+    return "ESC"
+def _locked_handle(k):
+    global MENU_CURSOR
+    if k=="UP":
+        MENU_CURSOR=(MENU_CURSOR-1)%len(MENU_ITEMS)
+        state["menu"]=MENU_CURSOR
+        return
+    if k=="DOWN":
+        MENU_CURSOR=(MENU_CURSOR+1)%len(MENU_ITEMS)
+        state["menu"]=MENU_CURSOR
+        return
+    if k=="RIGHT":
+        if MENU_CURSOR==0:
+            state["zoom"]=clamp(round(state["zoom"]+0.25,2),0.5,3.0)
+        elif MENU_CURSOR==1:
+            i=(TF_ORDER.index(state["tf"])+1)%len(TF_ORDER)
+            state["tf"]=TF_ORDER[i]
+            state["status"]="LOADING "+state["tf"]
+            _locked_render()
+            refresh()
+            state["status"]="LIVE"
+        return
+    if k=="LEFT":
+        if MENU_CURSOR==0:
+            state["zoom"]=clamp(round(state["zoom"]-0.25,2),0.5,3.0)
+        elif MENU_CURSOR==1:
+            i=(TF_ORDER.index(state["tf"])-1)%len(TF_ORDER)
+            state["tf"]=TF_ORDER[i]
+            state["status"]="LOADING "+state["tf"]
+            _locked_render()
+            refresh()
+            state["status"]="LIVE"
+        return
+    if k in ("\r","\n"):
+        if MENU_CURSOR==0:
+            state["zoom"]=clamp(round(state["zoom"]+0.25,2),0.5,3.0)
+        elif MENU_CURSOR==1:
+            i=(TF_ORDER.index(state["tf"])+1)%len(TF_ORDER)
+            state["tf"]=TF_ORDER[i]
+            state["status"]="LOADING "+state["tf"]
+            _locked_render()
+            refresh()
+            state["status"]="LIVE"
+        elif MENU_CURSOR==2:
+            state["auto"]=not state["auto"]
+        elif MENU_CURSOR==3:
+            refresh()
+        elif MENU_CURSOR==4:
+            state["running"]=False
+        return
+    handle(k)
+def main():
+    global WIDTH,HEIGHT,FIRST_FRAME
+    term=shutil.get_terminal_size((WIDTH,HEIGHT))
+    WIDTH=max(100,min(WIDTH,term.columns))
+    HEIGHT=max(32,min(HEIGHT,term.lines))
+    refresh()
+    fd=sys.stdin.fileno()
+    old=termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)
+        FIRST_FRAME=True
+        while state["running"]:
+            _locked_render()
+            if select.select([fd],[],[],1.0)[0]:
+                _locked_handle(_read_key(fd))
+    finally:
+        termios.tcsetattr(fd,termios.TCSADRAIN,old)
+        sys.stdout.write("\033[0m\033[H")
+        sys.stdout.flush()
+# ===== END LOCKED_TERMINAL_COMPOSITOR_V1 =====
+
+
+# ===== MULTICHART_REVEALERABILITY_V1 =====
+MULTI_CHARTS=[]
+MULTI_MENU=0
+MULTI_REFRESH_SECONDS=5.0
+MULTI_LAST_REFRESH=0.0
+MULTI_VIEW_LIST=False
+MULTI_FAVORITES=[]
+CRYPTO_CURSOR=0
+CRYPTO_PAIRS=["BTC-USD","ETH-USD","SOL-USD","XRP-USD","ADA-USD","DOGE-USD","AVAX-USD","LINK-USD","LTC-USD","BCH-USD","DOT-USD","ATOM-USD","UNI-USD","AAVE-USD","ETC-USD","FIL-USD","NEAR-USD","ALGO-USD","XTZ-USD","MKR-USD","COMP-USD","SUSHI-USD","CRV-USD","SNX-USD","EOS-USD","ZEC-USD","DASH-USD"]
+def _pair_normalize(pair):
+    pair=pair.strip().upper().replace("/","-").replace("_","-").replace(" ","")
+    if "-" not in pair and len(pair)==6:
+        pair=pair[:3]+"-"+pair[3:]
+    return pair
+def _pair_url(pair,tf):
+    return "https://api.exchange.coinbase.com/products/"+urllib.parse.quote(pair,safe="")+"/candles?granularity="+str(TF[tf])
+def _fetch_pair(pair,tf):
+    try:
+        req=urllib.request.Request(_pair_url(pair,tf),headers={"User-Agent":"UniversalCRT/3.0","Accept":"application/json"})
+        with urllib.request.urlopen(req,timeout=5,context=ssl.create_default_context()) as r:
+            raw=json.loads(r.read().decode())
+        rows=[]
+        for x in reversed(raw):
+            if len(x)>=6:
+                ts,lo,hi,op,cl,vol=x[:6]
+                rows.append({"ts":int(ts),"o":float(op),"h":float(hi),"l":float(lo),"c":float(cl),"v":float(vol)})
+        return rows[-120:] if rows else []
+    except Exception:
+        return []
+def _multi_add_chart(pair,tf=None):
+    pair=_pair_normalize(pair)
+    if not pair:return False
+    tf=tf or state["tf"]
+    rows=_fetch_pair(pair,tf)
+    if not rows:
+        return False
+    for c in MULTI_CHARTS:
+        if c["pair"]==pair:
+            c["tf"]=tf
+            c["data"]=rows
+            c["visible"]=True
+            c["last_refresh"]=time.time()
+            return True
+    MULTI_CHARTS.append({"pair":pair,"tf":tf,"data":rows,"visible":True,"last_refresh":time.time(),"zoom":1.0,"auto":True})
+    return True
+def _multi_remove_or_toggle(index):
+    if 0<=index<len(MULTI_CHARTS):
+        MULTI_CHARTS[index]["visible"]=not MULTI_CHARTS[index]["visible"]
+def _crypto_cycle():
+    global CRYPTO_CURSOR,MULTI_MENU
+    if not CRYPTO_PAIRS:return
+    pair=CRYPTO_PAIRS[CRYPTO_CURSOR%len(CRYPTO_PAIRS)]
+    found=-1
+    for i,c in enumerate(MULTI_CHARTS):
+        if c["pair"]==pair:
+            found=i
+            break
+    if found<0:
+        if _multi_add_chart(pair):
+            found=len(MULTI_CHARTS)-1
+    if found>=0:
+        MULTI_CHARTS[found]["visible"]=True
+        if pair not in MULTI_FAVORITES:
+            MULTI_FAVORITES.append(pair)
+        MULTI_MENU=6+found
+    CRYPTO_CURSOR=(CRYPTO_CURSOR+1)%len(CRYPTO_PAIRS)
+
+def _view_list():
+    global MULTI_VIEW_LIST
+    MULTI_VIEW_LIST=not MULTI_VIEW_LIST
+
+def _toggle_selected_chart():
+    if not MULTI_CHARTS:return
+    i=MULTI_MENU-6
+    if 0<=i<len(MULTI_CHARTS):
+        MULTI_CHARTS[i]["visible"]=not MULTI_CHARTS[i]["visible"]
+        if MULTI_CHARTS[i]["pair"] not in MULTI_FAVORITES:
+            MULTI_FAVORITES.append(MULTI_CHARTS[i]["pair"])
+
+def _multi_visible():
+    return [c for c in MULTI_CHARTS if c["visible"]]
+def _multi_refresh():
+    now=time.time()
+    for c in MULTI_CHARTS:
+        if now-c["last_refresh"]>=MULTI_REFRESH_SECONDS:
+            rows=_fetch_pair(c["pair"],c["tf"])
+            if rows:
+                c["data"]=rows
+                c["last_refresh"]=now
+def _multi_input(prompt):
+    fd=sys.stdin.fileno()
+    old=termios.tcgetattr(fd)
+    try:
+        termios.tcsetattr(fd,termios.TCSADRAIN,old)
+        sys.stdout.write("\033[31;1H\033[2K"+prompt)
+        sys.stdout.flush()
+        value=sys.stdin.readline().strip()
+    finally:
+        tty.setcbreak(fd)
+    return value
+def _multi_open_chart():
+    sys.stdout.write("\033[?25h")
+    sys.stdout.flush()
+    pair=_multi_input("OPEN NEW CHART | TYPE PAIR (BTC-USD): ")
+    pair=_pair_normalize(pair)
+    if pair:
+        tf=state["tf"]
+        sys.stdout.write("\033[31;1H\033[2KLOADING "+pair+" "+tf+" ...")
+        sys.stdout.flush()
+        if not _multi_add_chart(pair,tf):
+            sys.stdout.write("\033[31;1H\033[2KPAIR DATA UNAVAILABLE: "+pair)
+            sys.stdout.flush()
+            time.sleep(1.2)
+    sys.stdout.write("\033[?25l")
+def _multi_slots(count):
+    top=4
+    bottom=29
+    available=max(8,bottom-top)
+    h=max(6,available//max(1,count))
+    return [(top+i*h,min(bottom,top+(i+1)*h-1)) for i in range(count)]
+def _multi_draw_chart(c,top,bottom,buf):
+    global CHART_T,CHART_B,CHART_L,CHART_R,AXIS_L,AXIS_R
+    save=(CHART_T,CHART_B,CHART_L,CHART_R,AXIS_L,AXIS_R)
+    CHART_T=top
+    CHART_B=max(top+4,bottom)
+    CHART_L=5
+    CHART_R=84
+    AXIS_L=85
+    AXIS_R=88
+    rows=visible(c["data"])
+    if not rows:
+        CHART_T,CHART_B,CHART_L,CHART_R,AXIS_L,AXIS_R=save
+        return
+    old_auto=state["auto"]
+    old_zoom=state["zoom"]
+    state["auto"]=c["auto"]
+    state["zoom"]=c["zoom"]
+    lo,hi=price_range(rows)
+    frame(buf)
+    centers=draw_candles(buf,rows,lo,hi)
+    draw_trend(buf,rows,lo,hi,centers)
+    draw_price_axis(buf,lo,hi)
+    if CHART_B-CHART_T>=7:
+        draw_time(buf,rows,centers)
+    put(buf,CHART_L+2,CHART_T-1,c["pair"]+" | "+c["tf"]+" | LIVE | "+str(len(rows))+" CANDLES",CYAN)
+    last=rows[-1]
+    lc=GREEN if last["c"]>=last["o"] else RED
+    put(buf,CHART_L+2,CHART_B+1,"LAST "+f"{last['c']:,.2f}",lc)
+    state["auto"]=old_auto
+    state["zoom"]=old_zoom
+    CHART_T,CHART_B,CHART_L,CHART_R,AXIS_L,AXIS_R=save
+def _multi_menu(buf):
+    x1,x2=90,110
+    for y in range(2,31):
+        put(buf,x1,y,"|",BLUE)
+        put(buf,x2,y,"|",BLUE)
+    for x in range(x1,x2+1):
+        put(buf,x,2,"-",BLUE)
+        put(buf,x,30,"-",BLUE)
+    put(buf,x1,2,"+",BLUE)
+    put(buf,x2,2,"+",BLUE)
+    put(buf,x1,30,"+",BLUE)
+    put(buf,x2,30,"+",BLUE)
+    items=[("OPEN NEW CHART","N"),("CRYPTO LIST","F"),("VIEW LIST","V"),("TOGGLE CHART","G"),("ZOOM IN","Z"),("ZOOM OUT","X"),("TIMEFRAME","T"),("AUTO-ADJUST","A"),("REFRESH ALL","R")]
+    base=4
+    entries=[]
+    for item in items:
+        entries.append(item)
+    for i,c in enumerate(MULTI_CHARTS):
+        entries.append(("SHOW "+c["pair"] if c["visible"] else "HIDE "+c["pair"],"ENTER"))
+    entries.append(("QUIT","Q"))
+    put(buf,x1+2,3,"MULTI-CHART MENU",YELLOW)
+    for i,(name,key) in enumerate(entries):
+        y=base+i*2
+        if y>=30:break
+        selected=i==MULTI_MENU
+        c=CYAN if selected else WHITE
+        put(buf,x1+1,y,">" if selected else " ",c)
+        put(buf,x1+3,y,name[:15],c)
+        put(buf,x1+18,y,key[:2],DIM)
+def _multi_menu_action():
+    global MULTI_MENU
+    if MULTI_MENU==0:
+        _multi_open_chart()
+        return
+    if MULTI_MENU==1:
+        _crypto_cycle()
+        return
+    if MULTI_MENU==2:
+        _view_list()
+        return
+    if MULTI_MENU==3:
+        _toggle_selected_chart()
+        return
+    if MULTI_MENU==4:
+        for c in MULTI_CHARTS:
+            c["zoom"]=max(0.25,c.get("zoom",1.0)*0.8)
+        return
+    if MULTI_MENU==5:
+        for c in MULTI_CHARTS:
+            c["zoom"]=min(8.0,c.get("zoom",1.0)*1.25)
+        return
+    if MULTI_MENU==6:
+        for c in MULTI_CHARTS:
+            j=TF_ORDER.index(c["tf"]) if c["tf"] in TF_ORDER else 0
+            c["tf"]=TF_ORDER[(j+1)%len(TF_ORDER)]
+            c["data"]=_fetch_pair(c["pair"],c["tf"])
+        return
+    if MULTI_MENU==7:
+        for c in MULTI_CHARTS:
+            c["auto"]=not c.get("auto",True)
+        return
+    if MULTI_MENU==8:
+        for c in MULTI_CHARTS:
+            c["last_refresh"]=0
+        _multi_refresh()
+        return
+    chart_index=MULTI_MENU-9
+    if 0<=chart_index<len(MULTI_CHARTS):
+        MULTI_MENU=9+chart_index
+        _toggle_selected_chart()
+        return
+    if MULTI_MENU==9+len(MULTI_CHARTS):
+        raise SystemExit
+
+def _multi_key(k):
+    global MULTI_MENU
+    entries=10+len(MULTI_CHARTS)
+    if k in ("\\x1b[A","k"):
+        MULTI_MENU=(MULTI_MENU-1)%entries
+    elif k in ("\\x1b[B","j"):
+        MULTI_MENU=(MULTI_MENU+1)%entries
+    elif k in ("\\r","\\n"," "):
+        _multi_menu_action()
+    elif k.lower()=="n":
+        MULTI_MENU=0
+        _multi_open_chart()
+    elif k.lower()=="f":
+        _crypto_cycle()
+    elif k.lower()=="v":
+        _view_list()
+    elif k.lower()=="g":
+        _toggle_selected_chart()
+    elif k.lower()=="z":
+        for c in MULTI_CHARTS:c["zoom"]=max(0.25,c.get("zoom",1.0)*0.8)
+    elif k.lower()=="x":
+        for c in MULTI_CHARTS:c["zoom"]=min(8.0,c.get("zoom",1.0)*1.25)
+    elif k.lower()=="t":
+        for c in MULTI_CHARTS:
+            j=TF_ORDER.index(c["tf"]) if c["tf"] in TF_ORDER else 0
+            c["tf"]=TF_ORDER[(j+1)%len(TF_ORDER)]
+            c["data"]=_fetch_pair(c["pair"],c["tf"])
+    elif k.lower()=="a":
+        for c in MULTI_CHARTS:c["auto"]=not c.get("auto",True)
+    elif k.lower()=="r":
+        for c in MULTI_CHARTS:c["last_refresh"]=0
+        _multi_refresh()
+    elif k.lower()=="q":
+        raise SystemExit
+
+def _multi_render():
+    rowsbuf=[[" " for _ in range(WIDTH)] for _ in range(HEIGHT)]
+    put(rowsbuf,1,0,"UNIVERSAL CRT V3 | MULTI-CHART MARKET RASTER",CYAN)
+    put(rowsbuf,1,1,"FIXED VIEWPORTS | OHLC MAPPING | LIVE PAIR DATA | REVEALABILITY",DIM)
+    visible_charts=_multi_visible()
+    if not visible_charts:
+        put(rowsbuf,5,8,"NO CHARTS VISIBLE",YELLOW)
+        put(rowsbuf,5,10,"SELECT OPEN NEW CHART",WHITE)
+    else:
+        slots=_multi_slots(len(visible_charts))
+        for c,(top,bottom) in zip(visible_charts,slots):
+            _multi_draw_chart(c,top,bottom,rowsbuf)
+    _multi_menu(rowsbuf)
+    put(rowsbuf,1,31,"↑ ↓ SELECT  ← → ADJUST  ENTER ACTIVATE  Z/X ZOOM  T TIMEFRAME  A AUTO  R REFRESH  Q QUIT",WHITE)
+    global FIRST_FRAME
+    if FIRST_FRAME:
+        sys.stdout.write("\033[2J\033[H")
+        FIRST_FRAME=False
+    for y in range(0,HEIGHT):
+        sys.stdout.write(_ansi_at(0,y)+"".join(rowsbuf[y]))
+    sys.stdout.flush()
+def main():
+    global WIDTH,HEIGHT,FIRST_FRAME,MULTI_MENU
+    term=shutil.get_terminal_size((WIDTH,HEIGHT))
+    WIDTH=max(112,min(WIDTH,term.columns))
+    HEIGHT=max(32,min(HEIGHT,term.lines))
+    pair=_pair_normalize("BTC-USD")
+    rows=_fetch_pair(pair,state["tf"])
+    if not rows:rows=fetch_candles()
+    MULTI_CHARTS.append({"pair":pair,"tf":state["tf"],"data":rows,"visible":True,"last_refresh":time.time(),"zoom":1.0,"auto":True})
+    fd=sys.stdin.fileno()
+    old=termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)
+        FIRST_FRAME=True
+        while state["running"]:
+            _multi_refresh()
+            _multi_render()
+            if select.select([fd],[],[],0.25)[0]:
+                _multi_key(_read_key(fd))
+    finally:
+        termios.tcsetattr(fd,termios.TCSADRAIN,old)
+        sys.stdout.write("\033[0m\033[?25h")
+        sys.stdout.flush()
+# ===== END MULTICHART_REVEALERABILITY_V1 =====
+
+if __name__=="__main__":
+    main()

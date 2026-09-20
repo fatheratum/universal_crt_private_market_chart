@@ -1,0 +1,423 @@
+#!/usr/bin/env python3
+import ast
+import hashlib
+import importlib.util
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT=Path.cwd()
+CRT=ROOT/"universal_crt_v4.py"
+OMNI=ROOT/"OMNICIPHERIST.py"
+ACTIVE=ROOT/"active_trade.json"
+BACKUP_DIR=ROOT/"backups"
+
+PROTECTED=[
+    CRT,
+    OMNI,
+    ACTIVE,
+    BACKUP_DIR/"universal_crt_v4.py.BEFORE_OMNI_MERGE",
+    BACKUP_DIR/"OMNICIPHERIST.py.BEFORE_OMNI_MERGE",
+]
+
+SECRET_PATTERNS=[
+    r"(?i)(api[_-]?key)\s*[:=]\s*['\"]?([A-Za-z0-9_\-]{8,})",
+    r"(?i)(secret[_-]?key)\s*[:=]\s*['\"]?([A-Za-z0-9_\-]{8,})",
+    r"(?i)(access[_-]?token)\s*[:=]\s*['\"]?([A-Za-z0-9_\-\.]{8,})",
+    r"(?i)(auth[_-]?token)\s*[:=]\s*['\"]?([A-Za-z0-9_\-\.]{8,})",
+    r"(?i)(password)\s*[:=]\s*['\"]?([^\s'\"]{6,})",
+]
+
+PROVIDER_NAMES={
+    "alpaca":"ALPACA",
+    "oanda":"OANDA",
+    "interactive brokers":"INTERACTIVE BROKERS",
+    "ib_insync":"INTERACTIVE BROKERS",
+    "metatrader":"METATRADER",
+    "metatrader5":"METATRADER 5",
+    "mt5":"METATRADER 5",
+    "ctrader":"CTRADER",
+    "fxcm":"FXCM",
+    "dukascopy":"DUKASCOPY",
+    "tradier":"TRADIER",
+    "twelvedata":"TWELVE DATA",
+    "alpha vantage":"ALPHA VANTAGE",
+    "alphavantage":"ALPHA VANTAGE",
+    "finnhub":"FINNHUB",
+    "polygon":"POLYGON",
+    "oanda":"OANDA",
+    "coinbase":"COINBASE",
+    "coingecko":"COINGECKO",
+    "biquote":"BIQUOTE",
+    "frankfurter":"FRANKFURTER",
+    "yahoo finance":"YAHOO FINANCE",
+    "yfinance":"YAHOO FINANCE",
+}
+
+KEYWORDS=[
+    "GBPJPY",
+    "GBP/JPY",
+    "GBP-JPY",
+    "contract_size",
+    "contractSize",
+    "contract_units",
+    "lot_size",
+    "lotSize",
+    "min_lot",
+    "minimum_lot",
+    "max_lot",
+    "maximum_lot",
+    "lot_step",
+    "tick_size",
+    "tickSize",
+    "digits",
+    "precision",
+    "margin_currency",
+    "marginCurrency",
+    "pip_size",
+    "pipSize",
+    "account_currency",
+    "accountCurrency",
+    "bid",
+    "ask",
+    "ohlc",
+    "candles",
+    "15m",
+    "15min",
+    "900",
+]
+
+def sha(path):
+    if not path.exists():
+        return "MISSING"
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+def ast_ok(path):
+    try:
+        ast.parse(path.read_text(encoding="utf-8"))
+        return True
+    except Exception as e:
+        print(f"AST FAILURE {path.name}: {e}")
+        return False
+
+def redact(text):
+    out=text
+    for pattern in SECRET_PATTERNS:
+        out=re.sub(
+            pattern,
+            lambda m:f"{m.group(1)}=<REDACTED>",
+            out
+        )
+    return out
+
+def classify(text):
+    low=text.lower()
+    labels=[]
+
+    provider_hits=[]
+    for needle,name in PROVIDER_NAMES.items():
+        if needle in low and name not in provider_hits:
+            provider_hits.append(name)
+
+    if provider_hits:
+        labels.append("PROVIDER="+",".join(provider_hits))
+
+    if any(x in low for x in [
+        "contract_size","contractsize","contract_units",
+        "min_lot","minimum_lot","max_lot","maximum_lot",
+        "lot_step","lot_size","lotsize"
+    ]):
+        labels.append("INSTRUMENT_SPEC_CANDIDATE")
+
+    if any(x in low for x in [
+        "bid","ask","quote","spread"
+    ]):
+        labels.append("EXECUTION_QUOTE_CANDIDATE")
+
+    if any(x in low for x in [
+        "ohlc","candles","open","high","low","close"
+    ]):
+        labels.append("OHLC_CANDIDATE")
+
+    if "frankfurter" in low or "exchange rate" in low:
+        labels.append("REFERENCE_RATE_CANDIDATE")
+
+    if "pip_size" in low or "pipsize" in low:
+        labels.append("PIP_SPEC_CANDIDATE")
+
+    if "margin_currency" in low or "margincurrency" in low:
+        labels.append("MARGIN_SPEC_CANDIDATE")
+
+    if not labels:
+        labels.append("UNCLASSIFIED")
+
+    return labels
+
+def scan_text_file(path):
+    try:
+        text=path.read_text(encoding="utf-8",errors="replace")
+    except Exception:
+        return
+
+    hits=[]
+    for n,line in enumerate(text.splitlines(),1):
+        if any(k.lower() in line.lower() for k in KEYWORDS):
+            hits.append((n,redact(line.strip())))
+
+    if not hits:
+        return
+
+    print(f"\nFILE: {path}")
+    print("CLASSIFICATION:",", ".join(classify(text)))
+
+    for n,line in hits[:80]:
+        print(f"  L{n}: {line}")
+
+    if len(hits)>80:
+        print(f"  ... {len(hits)-80} additional matches suppressed")
+
+def env_scan():
+    print("\nENVIRONMENT VARIABLE AUTHORITY SCAN")
+
+    provider_vars=[]
+    credential_vars=[]
+    instrument_vars=[]
+
+    for key,value in os.environ.items():
+        low=key.lower()
+
+        if any(x in low for x in [
+            "api","token","secret","credential",
+            "password","key"
+        ]):
+            credential_vars.append(key)
+
+        if any(x in low for x in [
+            "oanda","alpaca","ibkr","interactive",
+            "metatrader","mt5","ctrader","fxcm",
+            "finnhub","polygon","twelve","alpha",
+            "coinbase","biquote","broker","forex"
+        ]):
+            provider_vars.append(key)
+
+        if any(x in low for x in [
+            "gbpjpy","contract","lot","pip",
+            "tick","margin","symbol"
+        ]):
+            instrument_vars.append(key)
+
+    if credential_vars:
+        for key in sorted(set(credential_vars)):
+            print(f"  CREDENTIAL PRESENT: {key}")
+            print("  SECRET VALUE: REDACTED")
+    else:
+        print("  NO CREDENTIAL-LIKE ENVIRONMENT VARIABLES FOUND")
+
+    if provider_vars:
+        print("\n  PROVIDER-RELATED ENVIRONMENT VARIABLES:")
+        for key in sorted(set(provider_vars)):
+            print(f"    {key}")
+    else:
+        print("  NO PROVIDER-SPECIFIC ENVIRONMENT VARIABLES FOUND")
+
+    if instrument_vars:
+        print("\n  INSTRUMENT-RELATED ENVIRONMENT VARIABLES:")
+        for key in sorted(set(instrument_vars)):
+            print(f"    {key}")
+    else:
+        print("  NO INSTRUMENT-SPECIFIC ENVIRONMENT VARIABLES FOUND")
+
+def config_scan():
+    print("\nLOCAL CONFIGURATION DISCOVERY")
+
+    candidates=[]
+
+    for root in [ROOT,Path.home()]:
+        if not root.exists():
+            continue
+        try:
+            for p in root.rglob("*"):
+                if not p.is_file():
+                    continue
+                name=p.name.lower()
+                if any(x in name for x in [
+                    "config","credential","broker",
+                    "provider","account","symbol",
+                    "forex","trading","mt5","oanda",
+                    "alpaca","ibkr","ctrader"
+                ]):
+                    candidates.append(p)
+        except (PermissionError,OSError):
+            continue
+
+    unique=[]
+    seen=set()
+
+    for p in candidates:
+        try:
+            rp=p.resolve()
+        except Exception:
+            continue
+        if rp not in seen:
+            seen.add(rp)
+            unique.append(rp)
+
+    if not unique:
+        print("  NO LOCAL CONFIGURATION CANDIDATES FOUND")
+        return
+
+    print(f"  CANDIDATES FOUND: {len(unique)}")
+
+    for p in unique[:150]:
+        if any(str(p).startswith(str(x.resolve())) for x in PROTECTED if x.exists()):
+            continue
+
+        print(f"\n  CONFIG CANDIDATE: {p}")
+        scan_text_file(p)
+
+def python_package_scan():
+    print("\nINSTALLED PYTHON PROVIDER PACKAGE DISCOVERY")
+
+    packages=[
+        "MetaTrader5",
+        "oandapyV20",
+        "ib_insync",
+        "alpaca",
+        "finnhub",
+        "yfinance",
+        "fxcmpy",
+        "ctrader",
+        "ccxt",
+        "requests",
+    ]
+
+    found=[]
+
+    for pkg in packages:
+        try:
+            spec=importlib.util.find_spec(pkg)
+        except Exception:
+            spec=None
+
+        if spec is not None:
+            found.append(pkg)
+            print(f"  PRESENT: {pkg}")
+        else:
+            print(f"  ABSENT: {pkg}")
+
+    return found
+
+def installed_module_scan():
+    print("\nLOCAL PYTHON MODULE DISCOVERY")
+
+    for root in [ROOT]:
+        try:
+            files=sorted(root.glob("*.py"))
+        except Exception:
+            files=[]
+
+        for p in files:
+            if p.name=="CAT_STAGE_A_STEP_FIFTEEN.py":
+                continue
+
+            try:
+                text=p.read_text(encoding="utf-8",errors="replace")
+            except Exception:
+                continue
+
+            low=text.lower()
+
+            if any(x in low for x in [
+                "metatrader","mt5","oanda","alpaca",
+                "ib_insync","ibkr","ctrader",
+                "broker","contract_size","lot_step",
+                "gbpjpy","finnhub","fxcm"
+            ]):
+                print(f"\nMODULE CANDIDATE: {p}")
+                print("CLASSIFICATION:",", ".join(classify(text)))
+                scan_text_file(p)
+
+def json_scan(path):
+    if not path.exists():
+        return
+
+    print(f"\nJSON FILE: {path}")
+
+    try:
+        data=json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"  JSON INVALID: {e}")
+        return
+
+    text=json.dumps(data,indent=2)
+
+    labels=classify(text)
+
+    print("  CLASSIFICATION:",", ".join(labels))
+
+    if any(k.lower() in text.lower() for k in KEYWORDS):
+        for line in redact(text).splitlines()[:120]:
+            if any(k.lower() in line.lower() for k in KEYWORDS):
+                print(" ",line)
+
+def protected_hashes():
+    print("\nPROTECTED FILE INTEGRITY")
+
+    for p in PROTECTED:
+        print(f"  {p}")
+        print(f"    SHA256: {sha(p)}")
+
+def write_test():
+    print("\nWRITE-SAFETY CHECK")
+    print("  PRODUCTION FILE MODIFICATION: DISABLED")
+    print("  ACTIVE TRADE MODIFICATION: DISABLED")
+    print("  BACKUP MODIFICATION: DISABLED")
+    print("  CREDENTIAL VALUES: REDACTED")
+
+def main():
+    print("="*80)
+    print("CAT STAGE A — STEP FIFTEEN")
+    print("LOCAL AUTHORITY / CREDENTIAL / PROVIDER DISCOVERY")
+    print("TARGET: UNIVERSALCRT V4")
+    print("MODE: READ-ONLY")
+    print("="*80)
+
+    protected_hashes()
+
+    print("\nSOURCE AST VALIDATION")
+    print(f"  universal_crt_v4.py: {ast_ok(CRT)}")
+    print(f"  OMNICIPHERIST.py: {ast_ok(OMNI)}")
+
+    print("\nUNIVERSALCRT V4 SOURCE DISCOVERY")
+    scan_text_file(CRT)
+
+    print("\nOMNICIPHERIST SOURCE DISCOVERY")
+    scan_text_file(OMNI)
+
+    json_scan(ROOT/"omnicipherist_config.json")
+    json_scan(ACTIVE)
+
+    env_scan()
+    config_scan()
+    installed_module_scan()
+    python_package_scan()
+
+    write_test()
+
+    print("\n"+"="*80)
+    print("STEP FIFTEEN AUTHORITY CLASSIFICATION")
+    print("="*80)
+    print("  TARGET: universal_crt_v4.py")
+    print("  PURPOSE: discover LOCAL authority only")
+    print("  PUBLIC PROVIDER SEARCH: NOT PERFORMED")
+    print("  SECRET VALUES: NEVER PRINTED")
+    print("  PRODUCTION MODIFICATION: NONE")
+    print("  ACTIVE TRADE MODIFICATION: NONE")
+    print("  BACKUP MODIFICATION: NONE")
+    print("="*80)
+
+if __name__=="__main__":
+    main()

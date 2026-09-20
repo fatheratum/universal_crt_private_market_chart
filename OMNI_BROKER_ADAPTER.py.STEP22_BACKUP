@@ -1,0 +1,473 @@
+#!/usr/bin/env python3
+"""
+OMNI BROKER ADAPTER
+STEP 22
+
+Normalized broker/data interface.
+
+Rules:
+- No synthetic market data.
+- No hardcoded pip values.
+- No silent reference-data promotion.
+- No order execution unless an authenticated execution provider
+  is explicitly attached.
+- Provider implementations may be added behind this interface.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, asdict
+from datetime import datetime, timezone
+from typing import Any, Optional
+import json
+import os
+import time
+import urllib.parse
+import urllib.request
+
+
+@dataclass
+class AdapterResult:
+    ok: bool
+    source: str
+    authoritative: bool
+    executable: bool
+    timestamp: Optional[str]
+    data: Any = None
+    error: Optional[str] = None
+    classification: str = "UNVERIFIED"
+
+    def to_dict(self):
+        return asdict(self)
+
+
+@dataclass
+class Quote:
+    symbol: str
+    bid: float
+    ask: float
+    timestamp: str
+    source: str
+    authoritative: bool
+    executable: bool
+    market_state: str = "UNKNOWN"
+
+
+@dataclass
+class Candle:
+    timestamp: int
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: Optional[float] = None
+
+
+@dataclass
+class Instrument:
+    symbol: str
+    base_currency: str
+    quote_currency: str
+    price_precision: Optional[int]
+    tick_size: Optional[float]
+    pip_size: Optional[float]
+    contract_size: Optional[float]
+    lot_min: Optional[float]
+    lot_max: Optional[float]
+    lot_step: Optional[float]
+    margin_currency: Optional[str]
+    provider_symbol: Optional[str]
+    provider_timezone: Optional[str]
+    authoritative: bool
+    executable: bool
+
+
+@dataclass
+class Account:
+    account_id: Optional[str]
+    currency: Optional[str]
+    balance: Optional[float]
+    equity: Optional[float]
+    margin: Optional[float]
+    free_margin: Optional[float]
+    authenticated: bool
+    executable: bool
+    source: str
+
+
+@dataclass
+class Position:
+    position_id: str
+    symbol: str
+    direction: str
+    quantity: float
+    entry_price: float
+    current_price: Optional[float]
+    stop_loss: Optional[float]
+    take_profit: Optional[float]
+    unrealized_pl: Optional[float]
+    currency: Optional[str]
+
+
+class BrokerAdapter:
+    """
+    Provider-neutral normalized interface.
+
+    A method returning UNAVAILABLE is different from returning fake data.
+    """
+
+    name = "UNCONFIGURED"
+
+    def get_quote(self, symbol: str) -> AdapterResult:
+        return self._unavailable("QUOTE")
+
+    def get_candles(
+        self,
+        symbol: str,
+        timeframe: str,
+        limit: int = 100,
+    ) -> AdapterResult:
+        return self._unavailable("OHLC")
+
+    def get_account(self) -> AdapterResult:
+        return self._unavailable("ACCOUNT")
+
+    def get_instrument(self, symbol: str) -> AdapterResult:
+        return self._unavailable("INSTRUMENT")
+
+    def convert(
+        self,
+        amount: float,
+        from_currency: str,
+        to_currency: str,
+    ) -> AdapterResult:
+        return self._unavailable("CONVERSION")
+
+    def get_market_state(self, symbol: str) -> AdapterResult:
+        return self._unavailable("MARKET_STATE")
+
+    def get_timestamp(self) -> AdapterResult:
+        return AdapterResult(
+            ok=True,
+            source=self.name,
+            authoritative=False,
+            executable=False,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            data=datetime.now(timezone.utc).isoformat(),
+            classification="LOCAL_CLOCK",
+        )
+
+    def get_position(self, position_id: str) -> AdapterResult:
+        return self._unavailable("POSITION")
+
+    def place_order(self, order: dict) -> AdapterResult:
+        return self._execution_unavailable("ORDER")
+
+    def modify_order(
+        self,
+        order_id: str,
+        changes: dict,
+    ) -> AdapterResult:
+        return self._execution_unavailable("MODIFY_ORDER")
+
+    def close_position(self, position_id: str) -> AdapterResult:
+        return self._execution_unavailable("CLOSE_POSITION")
+
+    def _unavailable(self, capability):
+        return AdapterResult(
+            ok=False,
+            source=self.name,
+            authoritative=False,
+            executable=False,
+            timestamp=None,
+            error=f"{capability} provider is not configured",
+            classification="UNAVAILABLE",
+        )
+
+    def _execution_unavailable(self, capability):
+        return AdapterResult(
+            ok=False,
+            source=self.name,
+            authoritative=False,
+            executable=False,
+            timestamp=None,
+            error=f"{capability} execution interface is not configured",
+            classification="EXECUTION_UNAVAILABLE",
+        )
+
+
+class BiQuoteReferenceAdapter(BrokerAdapter):
+    """
+    Existing BiQuote endpoint used by OMNICIPHERIST.
+
+    This adapter deliberately classifies the endpoint as reference data.
+    It does not claim broker execution authority merely because the
+    response reports an MT5 source.
+    """
+
+    name = "BIQUOTE_REFERENCE"
+
+    def __init__(self, timeout: float = 8.0):
+        self.timeout = timeout
+
+    def get_quote(self, symbol: str) -> AdapterResult:
+        symbol = symbol.upper().replace("/", "").replace("-", "")
+
+        if len(symbol) != 6 or not symbol.isalpha():
+            return AdapterResult(
+                ok=False,
+                source=self.name,
+                authoritative=False,
+                executable=False,
+                timestamp=None,
+                error="Invalid six-letter FX symbol",
+                classification="INVALID_SYMBOL",
+            )
+
+        url = f"https://biquote.io/api/{urllib.parse.quote(symbol)}"
+
+        try:
+            request = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent":"OMNI-Broker-Adapter/1.0",
+                    "Accept":"application/json",
+                },
+            )
+
+            with urllib.request.urlopen(
+                request,
+                timeout=self.timeout,
+            ) as response:
+                raw=response.read().decode(
+                    "utf-8",
+                    errors="replace",
+                )
+
+            payload=json.loads(raw)
+
+            bid=self._number(payload,"bid")
+            ask=self._number(payload,"ask")
+
+            if bid is None or ask is None:
+                return AdapterResult(
+                    ok=False,
+                    source=self.name,
+                    authoritative=False,
+                    executable=False,
+                    timestamp=None,
+                    data=payload,
+                    error="Provider response lacks usable bid/ask",
+                    classification="REFERENCE_INCOMPLETE",
+                )
+
+            timestamp=(
+                payload.get("timestamp")
+                or payload.get("time")
+                or payload.get("date")
+            )
+
+            market_state=str(
+                payload.get("marketState")
+                or payload.get("market_state")
+                or "UNKNOWN"
+            )
+
+            quote=Quote(
+                symbol=symbol,
+                bid=bid,
+                ask=ask,
+                timestamp=str(timestamp) if timestamp else "",
+                source=str(
+                    payload.get("source")
+                    or payload.get("provider")
+                    or self.name
+                ),
+                authoritative=False,
+                executable=False,
+                market_state=market_state,
+            )
+
+            stale=bool(payload.get("stale",False))
+
+            return AdapterResult(
+                ok=True,
+                source=self.name,
+                authoritative=False,
+                executable=False,
+                timestamp=quote.timestamp or None,
+                data=quote,
+                classification=(
+                    "STALE_REFERENCE"
+                    if stale or market_state.lower() != "open"
+                    else "REFERENCE"
+                ),
+            )
+
+        except Exception as exc:
+            return AdapterResult(
+                ok=False,
+                source=self.name,
+                authoritative=False,
+                executable=False,
+                timestamp=None,
+                error=f"{type(exc).__name__}: {exc}",
+                classification="PROVIDER_ERROR",
+            )
+
+    @staticmethod
+    def _number(payload, key):
+        value=payload.get(key)
+        try:
+            return float(value)
+        except (TypeError,ValueError):
+            return None
+
+
+class ConfiguredProviderAdapter(BrokerAdapter):
+    """
+    Future authenticated provider implementation.
+
+    Credentials are read only from environment variables.
+    Values are never printed or returned by diagnostics.
+    """
+
+    name = "CONFIGURED_PROVIDER"
+
+    def __init__(self):
+        self.endpoint=os.environ.get("OMNI_BROKER_ENDPOINT")
+        self.account_id=os.environ.get("OMNI_BROKER_ACCOUNT_ID")
+        self.api_key=os.environ.get("OMNI_BROKER_API_KEY")
+
+    @property
+    def configured(self):
+        return bool(
+            self.endpoint
+            and self.account_id
+            and self.api_key
+        )
+
+    def get_account(self):
+        if not self.configured:
+            return AdapterResult(
+                ok=False,
+                source=self.name,
+                authoritative=False,
+                executable=False,
+                timestamp=None,
+                error="Authenticated provider configuration is incomplete",
+                classification="NOT_CONFIGURED",
+            )
+
+        return AdapterResult(
+            ok=False,
+            source=self.name,
+            authoritative=False,
+            executable=False,
+            timestamp=None,
+            error="Provider transport has not yet been implemented",
+            classification="ADAPTER_PENDING_PROVIDER",
+        )
+
+
+def select_adapter() -> BrokerAdapter:
+    """
+    Selects an explicitly configured authenticated provider first.
+    Otherwise exposes the existing BiQuote reference interface.
+
+    No provider is promoted to execution authority here.
+    """
+
+    configured=ConfiguredProviderAdapter()
+
+    if configured.configured:
+        return configured
+
+    return BiQuoteReferenceAdapter()
+
+
+def authority_snapshot(adapter: BrokerAdapter, symbol="GBPJPY"):
+    quote=adapter.get_quote(symbol)
+    account=adapter.get_account()
+    instrument=adapter.get_instrument(symbol)
+    candles=adapter.get_candles(symbol,"15m",100)
+    conversion=adapter.convert(1.0,"JPY","USD")
+    state=adapter.get_market_state(symbol)
+
+    return {
+        "adapter":adapter.name,
+        "symbol":symbol,
+        "quote":quote.to_dict(),
+        "account":account.to_dict(),
+        "instrument":instrument.to_dict(),
+        "candles":candles.to_dict(),
+        "conversion":conversion.to_dict(),
+        "market_state":state.to_dict(),
+        "authority_confirmed":False,
+    }
+
+
+def print_result(name,result):
+    print(f"\n{name}")
+    print(f"  OK: {result.ok}")
+    print(f"  SOURCE: {result.source}")
+    print(f"  AUTHORITATIVE: {result.authoritative}")
+    print(f"  EXECUTABLE: {result.executable}")
+    print(f"  CLASSIFICATION: {result.classification}")
+    if result.timestamp:
+        print(f"  TIMESTAMP: {result.timestamp}")
+    if result.error:
+        print(f"  ERROR: {result.error}")
+
+
+def main():
+    print("╔══════════════════════════════════════════════════════════════════════╗")
+    print("║ OMNI BROKER ADAPTER — STEP 22                                    ║")
+    print("╚══════════════════════════════════════════════════════════════════════╝")
+
+    adapter=select_adapter()
+
+    print("\nADAPTER:",adapter.name)
+    print("SYMBOL: GBPJPY")
+    print("TIMEFRAME: 15m")
+
+    print_result("QUOTE",adapter.get_quote("GBPJPY"))
+    print_result(
+        "15M OHLC",
+        adapter.get_candles("GBPJPY","15m",100),
+    )
+    print_result("ACCOUNT",adapter.get_account())
+    print_result(
+        "INSTRUMENT",
+        adapter.get_instrument("GBPJPY"),
+    )
+    print_result(
+        "JPY→USD",
+        adapter.convert(1.0,"JPY","USD"),
+    )
+    print_result(
+        "MARKET STATE",
+        adapter.get_market_state("GBPJPY"),
+    )
+
+    print("\nEXECUTION")
+    print("PLACE ORDER:",adapter.place_order({}).classification)
+    print("MODIFY ORDER:",adapter.modify_order("","{}").classification)
+    print("CLOSE POSITION:",adapter.close_position("").classification)
+
+    print("\nSAFETY")
+    print("NO ORDER SENT")
+    print("NO POSITION MODIFIED")
+    print("NO FILE WRITTEN")
+
+    print("\nSTEP 22")
+    print("ADAPTER: CREATED")
+    print("NORMALIZED INTERFACE: AVAILABLE")
+    print("REFERENCE PROVIDER: ISOLATED")
+    print("EXECUTION PROVIDER: CONFIGURATION-DEPENDENT")
+    print("PRODUCTION FILES: UNMODIFIED")
+    print("ACTIVE TRADE: UNMODIFIED")
+
+
+if __name__=="__main__":
+    main()
